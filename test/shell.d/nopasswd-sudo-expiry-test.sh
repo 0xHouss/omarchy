@@ -37,6 +37,30 @@ for status in 1 2 3; do
 done
 pass "public status distinguishes inactive from errors and revokes authorization on exit"
 
+# A failed root action names what the installed copy lacks: a different copy
+# than the one started, or boot cleanup and hook files missing.
+run_public() {
+  local script=$1
+  shift
+  env "$@" /usr/bin/bash -p "$script" 15 >"$test_tmp/public.log" 2>&1
+}
+mkdir -p "$test_tmp/checkout"
+cp "$test_tmp/omarchy-sudo-passwordless" "$test_tmp/omarchy-security-functions" "$test_tmp/checkout/"
+printf '\n# checkout edit\n' >>"$test_tmp/checkout/omarchy-sudo-passwordless"
+assert_status 1 run_public "$test_tmp/checkout/omarchy-sudo-passwordless" TEST_STATUS=1
+grep -q "differs from $test_tmp/checkout/omarchy-sudo-passwordless" "$test_tmp/public.log" || fail "a failed inspection must name a different installed copy"
+assert_status 1 run_public "$test_tmp/omarchy-sudo-passwordless" TEST_STATUS=1
+! grep -q 'differs from' "$test_tmp/public.log" || fail "the installed copy itself must not report a difference"
+cp "$test_tmp/omarchy-sudo-passwordless" "$test_tmp/checkout/omarchy-sudo-passwordless"
+assert_status 1 run_public "$test_tmp/checkout/omarchy-sudo-passwordless" TEST_STATUS=1
+! grep -q 'differs from' "$test_tmp/public.log" || fail "an identical copy elsewhere must not report a difference"
+mv "$test_tmp/hooks/05-omarchy-passwordless-revoke.hook" "$test_tmp/hook.saved"
+assert_status 5 run_public "$test_tmp/omarchy-sudo-passwordless" TEST_STATUS=0 TEST_ENABLE_STATUS=5
+grep -q '^Passwordless sudo expiry was not updated.$' "$test_tmp/public.log" || fail "a failed renewal must say so"
+grep -q "$test_tmp/hooks/05-omarchy-passwordless-revoke.hook is not installed" "$test_tmp/public.log" || fail "a missing revocation hook must be named"
+mv "$test_tmp/hook.saved" "$test_tmp/hooks/05-omarchy-passwordless-revoke.hook"
+pass "failed root actions name a different installed copy and missing grant prerequisites"
+
 printf ': >"$TEST_STARTUP_MARKER"\nset -o privileged\nunset BASH_ENV\n' >"$test_tmp/startup"
 : >"$test_tmp/commands"
 if TEST_STARTUP_MARKER="$test_tmp/startup-ran" BASH_ENV="$test_tmp/startup" bash "$test_tmp/omarchy-sudo-passwordless" -p >/dev/null 2>&1; then

@@ -76,6 +76,7 @@ case "$name" in
       TEST_EUID=0 /usr/bin/bash -p "$@"
     else
       [[ ${2:-} != __status ]] || exit "${TEST_STATUS:-3}"
+      [[ ${2:-} != __enable ]] || exit "${TEST_ENABLE_STATUS:-0}"
     fi
     ;;
   gum) exit 1 ;;
@@ -97,6 +98,7 @@ for name in ('omarchy-sudo-passwordless', 'omarchy-security-functions'):
         target = str(temp/'hooks') if path == '/usr/share/libalpm/hooks' else str(temp) + path
         text = text.replace(path, target)
     text = text.replace('((EUID == 0))', '((${TEST_EUID:-1} == 0))')
+    text = text.replace('INSTALLED_SELF=/usr/bin/omarchy-sudo-passwordless', 'INSTALLED_SELF=' + str(temp/name))
     for command in ('stat', 'chown', 'install', 'rm', 'mv', 'systemd-run', 'systemctl', 'date', 'getent', 'sudo', 'gum'):
         text = text.replace('/usr/bin/' + command, str(temp/'bin'/command))
     (temp/name).write_text(text)
