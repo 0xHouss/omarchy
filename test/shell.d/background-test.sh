@@ -26,7 +26,7 @@ const themeSet = fs.readFileSync(path.join(root, 'bin/omarchy-theme-set'), 'utf8
 // transition arrives: WebP decodes take as long at screen size as at native.
 assert(
   /function prepare\(path: string\): void \{\s*root\.prepareBackground\(path\)/.test(backgroundQml) &&
-    backgroundQml.includes('source: root.imageUrl(root.incomingBackground || root.preparedBackground)'),
+    backgroundQml.includes('readonly property string framePath: root.incomingBackground || root.preparedBackground'),
   'background decodes a prepared theme background in the hidden incoming frame'
 )
 assert(
@@ -42,5 +42,36 @@ assert(
 assert(
   themeSet.includes('shell_ipc background prepare "$PREPARED_BACKGROUND_SNAPSHOT" 9>&- &'),
   'theme set sends the prepare without holding the theme lock or waiting on it'
+)
+
+// The wallpaper is decoded at the screen's physical size, never at the size
+// it was shipped at, unless it is smaller than the screen: then it is decoded
+// at its own size instead of being scaled up to cover the screen.
+const mediaQml = fs.readFileSync(path.join(root, 'shell/Ui/BackgroundMedia.qml'), 'utf8')
+assert(
+  backgroundQml.includes('readonly property bool sized: width > 0 && height > 0') &&
+    backgroundQml.includes('readonly property int decodeWidth: sized ? Math.ceil(width * screen.devicePixelRatio) : 0') &&
+    backgroundQml.includes('readonly property int decodeHeight: sized ? Math.ceil(height * screen.devicePixelRatio) : 0'),
+  'background derives its decode size from the screen in physical pixels'
+)
+assert(
+  backgroundQml.includes('["magick", "identify", "-ping", "-format", "%w %h", sizeProbe.path]') &&
+    backgroundQml.includes('if (native.width > 0 && (native.width < decodeWidth || native.height < decodeHeight)) return Qt.size(native.width, native.height)'),
+  'background reads the wallpaper header and never decodes larger than the native size'
+)
+const count = (needle) => backgroundQml.split(needle).length - 1
+assertEqual(count('sourceSize.width: decode.width'), 2, 'both transition frames bind their decode width')
+assertEqual(count('sourceSize.height: decode.height'), 2, 'both transition frames bind their decode height')
+assertEqual(count('source: decode.width > 0 ? root.imageUrl('), 2, 'both transition frames wait for the screen and native sizes before loading')
+assert(
+  /constrainDecode: true\s*decodeSize: panel\.decodeSize\(root\.displayedBackground\)/.test(backgroundQml) &&
+    mediaQml.includes('source: !root.constrainDecode || root.decodeSize.width > 0 ? root.imageUrl : ""') &&
+    mediaQml.includes('sourceSize.width: root.constrainDecode ? root.decodeSize.width : (root.version > 0 ? width : 0)'),
+  'the displayed wallpaper waits for and decodes at the same size'
+)
+assert(
+  /function requestNativeSize\(path\) \{\s*if \(!path \|\| isVideo\(path\)/.test(backgroundQml) &&
+    /function prepareBackground[\s\S]*?requestNativeSize\(path\)/.test(backgroundQml),
+  'background never probes videos and probes a prepared frame ahead of its transition'
 )
 JS
