@@ -19,6 +19,15 @@ Item {
   property string displayedBackground: ""
   property string incomingBackground: ""
   property string oldBackground: ""
+  // A theme switch names its next background before it has staged the rest of
+  // the theme, so the incoming frame can decode while that work runs. A large
+  // WebP takes ~130ms to decode at any sourceSize, which the reveal would
+  // otherwise wait out after the transition arrives.
+  property string preparedBackground: ""
+  // The prepare and transition calls travel as separate IPC clients, so a
+  // prepare can land after its transition. The path it names then must not be
+  // decoded again.
+  property string lastTransitionPath: ""
   property bool finishingTransition: false
   property int backgroundVersion: 0
   property int revealStartedVersion: -1
@@ -48,6 +57,9 @@ Item {
     finalPath = String(finalPath || path).trim()
     fromPath = String(fromPath || "").trim()
     if (!path || (!force && finalPath === currentBackground)) return
+    if (path !== preparedBackground) preparedBackground = ""
+    preparedBackgroundTimer.stop()
+    lastTransitionPath = path
     currentBackground = finalPath
     backgroundVersion += 1
     revealStartedVersion = -1
@@ -60,6 +72,7 @@ Item {
     if (instant || !displayedBackground || isVideo(path) || isVideo(displayedBackground)) {
       oldBackground = ""
       incomingBackground = ""
+      preparedBackground = ""
       displayedBackground = finalPath
       revealProgress = 1
       return
@@ -105,6 +118,14 @@ Item {
     revealStartedVersion = backgroundVersion
     applyPendingTheme()
     revealAnimation.restart()
+  }
+
+  function prepareBackground(path) {
+    path = String(path || "").trim()
+    // Only a still that is not already on screen is worth decoding ahead.
+    if (!path || isVideo(path) || path === lastTransitionPath || path === displayedBackground) return
+    preparedBackground = path
+    preparedBackgroundTimer.restart()
   }
 
   function openSelector() {
@@ -156,6 +177,19 @@ Item {
     function themeTransition(fromPath: string, path: string, finalPath: string, colorsB64: string, shellB64: string): void {
       root.transitionBackgroundWithTheme(fromPath, path, finalPath, colorsB64, shellB64)
     }
+
+    function prepare(path: string): void {
+      root.prepareBackground(path)
+    }
+  }
+
+  // A prepared frame that no transition claims, say from a theme switch that
+  // failed after naming it, must not hold its decoded texture indefinitely.
+  Timer {
+    id: preparedBackgroundTimer
+    interval: 5000
+    repeat: false
+    onTriggered: root.preparedBackground = ""
   }
 
   Timer {
@@ -233,6 +267,7 @@ Item {
           if (ready && root.finishingTransition) {
             root.incomingBackground = ""
             root.oldBackground = ""
+            root.preparedBackground = ""
             root.finishingTransition = false
           }
         }
@@ -267,7 +302,9 @@ Item {
         Image {
           id: incomingFrame
           anchors.fill: parent
-          source: root.imageUrl(root.incomingBackground)
+          // The same URL as a prepared frame keeps its decoded image, so a
+          // transition to it can reveal at once.
+          source: root.imageUrl(root.incomingBackground || root.preparedBackground)
           fillMode: Image.PreserveAspectCrop
           asynchronous: true
           cache: false
