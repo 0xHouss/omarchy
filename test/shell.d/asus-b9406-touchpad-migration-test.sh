@@ -42,6 +42,11 @@ pass "b9406 migration repairs a machine still carrying the ignored quirks file"
 rm -f "$stale"
 touch "$dropin"
 run_migration 0
+grep -Fq "fix-asus-ptl-b9406-touchpad.sh" "$B9406_SUDO_LOG" || fail "b9406 migration rewrites a drop-in whose write was cut short"
+pass "b9406 migration rewrites a drop-in whose write was cut short"
+
+sed -n "/^\[ASUS ExpertBook B9406 Touchpad\]$/,/^EOF$/p" "$ROOT/install/hardware/asus/fix-asus-ptl-b9406-touchpad.sh" | sed '$d' >"$dropin"
+run_migration 0
 [[ ! -e $B9406_SUDO_LOG ]] || fail "b9406 migration needs no sudo once the machine is repaired"
 pass "b9406 migration is a no-op for a second user on a repaired machine"
 
