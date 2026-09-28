@@ -167,6 +167,75 @@ grep -F 'KERNEL_CMDLINE\[default\]' "$upgrade_to_quattro" >/dev/null
   fail "the pin check does not depend on the fallback it is about to lose"
 pass "Omarchy 4 upgrade checks whether root= is pinned in the limine config"
 
+# Run the pin check against fixture config layers. A false positive skips the
+# pin and the next boot has no root=; a false negative appends a second pin.
+eval "$(sed -n '/^kernel_cmdline_root_pinned() {$/,/^}$/p' "$upgrade_to_quattro")"
+pin_root=$(mktemp -d)
+trap 'rm -rf "$pin_root"' EXIT
+as_root() {
+  local script=${3//\/etc\//$pin_root/etc/}
+  bash -c "${script//\/usr\/share\//$pin_root/usr/share/}"
+}
+# Takes pairs of a config layer and a line to append to it.
+root_pinned() {
+  rm -rf "${pin_root:?}"/{etc,usr}
+  mkdir -p "$pin_root/etc/default" "$pin_root/etc/limine-entry-tool.d" "$pin_root/usr/share/limine-entry-tool.d"
+  while (($#)); do
+    printf '%s\n' "$2" >>"$pin_root/$1"
+    shift 2
+  done
+  kernel_cmdline_root_pinned
+}
+root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" root=UUID=abc rw"' || fail "a quoted root= pin is recognised"
+root_pinned etc/default/limine 'KERNEL_CMDLINE[default]=root=UUID=abc' || fail "an unquoted root= pin is recognised"
+root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" dm-mod.create="foo" root=UUID=abc rw"' ||
+  fail "a pin with a quoted parameter before root= is recognised"
+root_pinned usr/share/limine-entry-tool.d/root.conf 'KERNEL_CMDLINE[default]+="root=UUID=abc"' \
+  etc/default/limine 'KERNEL_CMDLINE[default]+=" rw"' || fail "an appending layer keeps an earlier pin"
+root_pinned etc/default/limine 'KERNEL_CMDLINE[default] += " root=UUID=abc rw"' || fail "a pin spaced around += is recognised"
+! root_pinned etc/default/limine "KERNEL_CMDLINE[default]+='root=UUID=abc rw'" ||
+  fail "single quotes are kept, as limine-entry-tool keeps them"
+! root_pinned etc/default/limine 'OLD_KERNEL_CMDLINE[default]+=" root=UUID=abc rw"' || fail "a renamed key is not a pin"
+! root_pinned etc/default/limine '# KERNEL_CMDLINE[default]+=" root=UUID=abc rw"' || fail "a commented-out pin is not a pin"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[fallback]+=" root=UUID=abc rw"' || fail "a fallback-only pin does not cover default"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" rootflags=subvol=@ rw"' || fail "rootflags= is not root="
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" systemd.setenv="root=UUID=abc" rw"' ||
+  fail "root= inside another parameter's value is not a pin"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" systemd.setenv="NOTE=x root=UUID=abc" rw"' ||
+  fail "root= after a space inside a quoted value is not a pin"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]=systemd.setenv="NOTE=x root=UUID=abc rw' ||
+  fail "root= after an unmatched quote is not a pin"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]=ro"x"ot=UUID=abc rw' ||
+  fail "a quoted segment inside a parameter name does not make it root="
+! root_pinned etc/limine-entry-tool.conf 'KERNEL_CMDLINE[default]=root=UUID=abc rw' \
+  etc/default/limine 'KERNEL_CMDLINE[default]=quiet' || fail "a pin replaced by a later layer is not a pin"
+! root_pinned etc/default/limine 'KERNEL_CMDLINE[default]+=" root=UUID=abc rw"' \
+  etc/default/limine 'KERNEL_CMDLINE[default]="quiet"' || fail "a pin replaced later in the same layer is not a pin"
+unset -f as_root
+pass "Omarchy 4 upgrade recognises exactly the root= pins that hold"
+
+# Installing the limine packages can deploy limine on a machine that had no
+# limine.conf when the pin ran, so verification pins whatever the first call skipped.
+(
+  eval "$(sed -n '/^kernel_cmdline_root_checked=/p;/^preserve_kernel_cmdline_root() {$/,/^}$/p;/^verify_kernel_cmdline_root() {$/,/^}$/p' "$upgrade_to_quattro")"
+  limine_conf=0 pin_checks=0
+  as_root() {
+    if [[ $1 == "test" ]]; then
+      ((limine_conf))
+    fi
+  }
+  kernel_cmdline_root_pinned() { ((++pin_checks)); }
+  limine-mkinitcpio() { :; }
+  preserve_kernel_cmdline_root
+  ((pin_checks == 0)) || fail "the pin waits for a limine.conf"
+  limine_conf=1
+  verify_kernel_cmdline_root
+  ((pin_checks == 1)) || fail "kernel cmdline verification pins a machine the transaction put on limine"
+  verify_kernel_cmdline_root
+  ((pin_checks == 1)) || fail "kernel cmdline verification pins a machine only once"
+)
+pass "Omarchy 4 upgrade pins root= on machines the transaction moves to limine"
+
 # The crypt layer hides in the parents on LVM-on-LUKS, and a partial cmdline
 # for an encrypted root must not be written at all.
 grep -F 'findmnt -no SOURCE --nofsroot /' "$upgrade_to_quattro" >/dev/null
