@@ -18,15 +18,16 @@ echo 'INTC1059' >"$acpi_devices/device:00/hid"
 
 # Chatty past the pipe buffer after the match, so a gate that piped lspci into a
 # grep that stops reading would die of SIGPIPE and read as "no IPU7" (#6608).
+# A failing lspci still prints first, so only its exit status can stop the install.
 cat >"$stub_bin/lspci" <<'SH'
 #!/bin/bash
 
-(( ${LSPCI_STATUS:-0} == 0 )) || exit "$LSPCI_STATUS"
 [[ -n ${IPU_PCI_ID:-} ]] &&
   printf '00:05.0 Multimedia controller [0480]: Intel Corporation Image Processing Unit [8086:%s]\n' "$IPU_PCI_ID"
 for _ in {1..4096}; do
   echo '02:00.0 Host bridge [0600]: Filler Device [ffff:0000]'
 done
+exit "${LSPCI_STATUS:-0}"
 SH
 
 cat >"$stub_bin/omarchy-pkg-add" <<'SH'
@@ -69,7 +70,7 @@ run_install 645d
   fail "Lunar Lake, which the ipu75xa HAL does not cover, is skipped" "$(cat "$calls")"
 pass "the same sensor behind another controller installs nothing"
 
-run_install "" 1
+run_install b05d 1
 [[ ! -s $calls ]] ||
   fail "an unreadable PCI bus skips the IPU7 camera stack" "$(cat "$calls")"
 pass "an unreadable PCI bus installs nothing"
