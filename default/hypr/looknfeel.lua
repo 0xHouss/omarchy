@@ -51,8 +51,6 @@ hl.config({
       gaps_out = 0,
       text_color = "rgb(ffffff)",
       text_color_inactive = "rgba(ffffff90)",
-      text_color_locked_active = "rgb(ffffff)",
-      text_color_locked_inactive = "rgba(ffffff90)",
       col = {
         active = "rgba(00000040)",
         inactive = "rgba(00000020)",

@@ -358,8 +358,8 @@ pass "handwritten Hyprland themes style locked group borders"
 
 grep -Fq 'border_locked_active = active_border_color,' "$ROOT/default/hypr/looknfeel.lua" ||
   fail "default locked groups inherit the active border"
-grep -Fq 'text_color_locked_inactive = "rgba(ffffff90)",' "$ROOT/default/hypr/looknfeel.lua" ||
-  fail "default locked groupbar text matches the translucent inactive text"
+! grep -Fq 'text_color_locked' "$ROOT/default/hypr/looknfeel.lua" ||
+  fail "default locked groupbar text is left to follow text_color, so user overrides reach it"
 grep -Fq 'locked_active = "rgba(00000040)",' "$ROOT/default/hypr/looknfeel.lua" ||
   fail "default locked active groupbars match unlocked groupbars"
 grep -Fq 'locked_inactive = "rgba(00000020)",' "$ROOT/default/hypr/looknfeel.lua" ||
