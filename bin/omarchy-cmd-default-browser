@@ -11,15 +11,17 @@ IFS=: read -ra data_dirs <<<"${XDG_DATA_HOME:-$HOME/.local/share}:${XDG_DATA_DIR
 IFS=: read -ra config_dirs <<<"${XDG_CONFIG_HOME:-$HOME/.config}:${XDG_CONFIG_DIRS:-/etc/xdg}"
 IFS=: read -ra desktops <<<"${XDG_CURRENT_DESKTOP:-}"
 
-# Installed means the entry's command still resolves: an entry of Omarchy's own
-# can outlive the browser it launched.
+# Installed means the command of the entry the launchers will read, the first
+# one found, still resolves: an entry of Omarchy's own can outlive the browser
+# it launched.
 installed() {
   local data_dir command
 
   for data_dir in "${data_dirs[@]}"; do
     [[ -r $data_dir/applications/$1 ]] || continue
     command=$(sed -n 's/^Exec=\([^ ]*\).*/\1/p' "$data_dir/applications/$1" | head -1)
-    [[ -n $command ]] && command -v "$command" >/dev/null && return 0
+    [[ -n $command ]] && command -v "$command" >/dev/null
+    return
   done
 
   return 1

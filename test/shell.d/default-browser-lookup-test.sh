@@ -34,8 +34,10 @@ chmod +x "$mock_bin"/*
 echo "Exec=chromium %U" >"$XDG_DATA_HOME/applications/chromium.desktop"
 echo "Exec=firefox %u" >"$XDG_DATA_HOME/applications/firefox.desktop"
 echo "Exec=brave %U" >"$XDG_DATA_DIRS/applications/brave-browser.desktop"
-# An entry of Omarchy's own left behind by a browser since removed.
+# An entry of Omarchy's own left behind by a browser since removed, shadowing
+# a system copy that the launchers would never read.
 echo "Exec=removed-browser %U" >"$XDG_DATA_HOME/applications/removed.desktop"
+echo "Exec=brave %U" >"$XDG_DATA_DIRS/applications/removed.desktop"
 
 cat >"$XDG_CONFIG_HOME/mimeapps.list" <<'EOF'
 [Added Associations]
