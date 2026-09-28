@@ -18,26 +18,21 @@ assert(
 )
 
 assert(
-  /function runBlank\(\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"\]\)/.test(serviceQml),
+  /function runBlank\(\) \{[^}]*Quickshell\.execDetached\(\["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"\]\)/.test(serviceQml),
   'the blank spawns statelessly'
-)
-
-assert(
-  /function forceWake\(\) \{[\s\S]*?Quickshell\.execDetached\(\["bash", "-c", "omarchy-system-wake"\]\)/.test(serviceQml),
-  'the wake spawns statelessly'
 )
 
 // Pointer motion calls runWake() at input rate, so dropping the old Process
 // guard without a replacement forks a shell per motion event. A Timer rather
 // than wall-clock arithmetic, so a clock stepping backwards cannot suppress it.
 assert(
-  /function runWake\(\) \{\s*if \(!wakeCoalesceTimer\.running\) forceWake\(\)/.test(serviceQml),
-  'the wake coalesces on a timer instead of on a process it can no longer see'
+  /function runWake\(\) \{[^}]*if \(!wakeCoalesceTimer\.running\) \{\s*wakeCoalesceTimer\.start\(\)\s*Quickshell\.execDetached\(\["bash", "-c", "omarchy-system-wake"\]\)/.test(serviceQml),
+  'the wake spawns statelessly, coalesced on a timer instead of on a process it can no longer see'
 )
 
 assert(
-  /function forceWake\(\) \{\s*wakeCoalesceTimer\.restart\(\)/.test(serviceQml),
-  'every wake opens the coalescing window'
+  /function forceWake\(\) \{\s*wakeCoalesceTimer\.stop\(\)\s*runWake\(\)\s*\}/.test(serviceQml),
+  'a forced wake skips the coalescing window'
 )
 
 // The lock surface is gone by the time these run, so nothing is left to ask
@@ -54,7 +49,7 @@ assert(
 
 // The silence is half the bug: nothing in the journal said the blank was skipped.
 assert(
-  /function runBlank\(\) \{\s*logEvent\("blank-requested"\)/.test(serviceQml),
+  /function runBlank\(\) \{[^}]*logEvent\("blank-requested"\)/.test(serviceQml),
   'every blank is recorded'
 )
 JS
