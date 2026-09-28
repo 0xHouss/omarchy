@@ -74,6 +74,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `codex` | The Codex app-server RPC | native Codex CLI session files (plus pi and opencode sessions) |
 | `grok` | The credits endpoint behind Grok's `/usage` view (the billing period's included usage) | Each session's `usage.json` (the ledger `grok usage` prints: tokens by model per finished turn), plus `summary.json` for sessions |
 | `cursor` | Cursor's dashboard RPCs: included, auto-model, named-model, and on-demand meters | the same dashboard RPCs, one call per day for the last week |
+| `opencode` | OpenCode Zen's Go usage endpoint (rolling + weekly + monthly) | pi and omp sessions on an opencode provider, plus opencode's own message store (`message`, falling back to `session_message`) |
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
@@ -121,6 +122,12 @@ is spend with no allowance behind it, so dollars over the plan limit read far
 past 100% while Cursor's own meters do not. The on-demand row is the exception
 and is a real ratio: dollars spent against the on-demand limit the account
 sets.
+
+OpenCode limits read `OPENCODE_API_KEY` first, then opencode's own credential
+store, then pi's. A recent probe answer is reused for 15 seconds, so opening
+the panel repeatedly does not repeat the request, and cached windows are
+dropped once they reset. Without a key the panel still shows local token
+usage.
 
 ### Fireworks balance
 
