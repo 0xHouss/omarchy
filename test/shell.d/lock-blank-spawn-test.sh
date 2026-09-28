@@ -38,12 +38,12 @@ assert(
 // The lock surface is gone by the time these run, so nothing is left to ask
 // again for a wake the coalescing window swallowed.
 assert(
-  /function finishUnlock\(\)[\s\S]*?logEvent\("unlocked"\)\s*forceWake\(\)/.test(serviceQml),
+  /function finishUnlock\(\) \{[^}]*logEvent\("unlocked"\)\s*forceWake\(\)/.test(serviceQml),
   'unlock always wakes'
 )
 
 assert(
-  /if \(!locked && root\.lockRequested\) \{[\s\S]*?root\.forceWake\(\)/.test(serviceQml),
+  /if \(!locked && root\.lockRequested\) \{[^}]*root\.forceWake\(\)/.test(serviceQml),
   'losing the session lock always wakes'
 )
 
