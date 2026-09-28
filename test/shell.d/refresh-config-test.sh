@@ -72,6 +72,7 @@ pass "refresh-config replaces symlinked configs without writing through them"
 echo '-- private user config' >"$home/.config/hypr/looknfeel.lua"
 echo '-- refreshed looknfeel' >"$omarchy_path/config/hypr/looknfeel.lua"
 chmod 600 "$home/.config/hypr/looknfeel.lua"
+ln "$home/.config/hypr/looknfeel.lua" "$tmpdir/looknfeel-link.lua"
 
 HOME="$home" OMARCHY_PATH="$omarchy_path" "$ROOT/bin/omarchy-refresh-config" hypr/looknfeel.lua >/dev/null
 
@@ -79,5 +80,7 @@ cmp -s "$omarchy_path/config/hypr/looknfeel.lua" "$home/.config/hypr/looknfeel.l
   fail "refresh-config copies the default over a regular config"
 [[ $(stat -c %a "$home/.config/hypr/looknfeel.lua") == "600" ]] ||
   fail "refresh-config keeps a regular config's mode"
+cmp -s "$omarchy_path/config/hypr/looknfeel.lua" "$tmpdir/looknfeel-link.lua" ||
+  fail "refresh-config keeps a regular config's hard links"
 
 pass "refresh-config overwrites regular configs in place"
