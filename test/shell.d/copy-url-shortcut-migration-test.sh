@@ -145,6 +145,20 @@ run_migration && fail "migration defers to a lock whose pid holds the profile op
 [[ $(jq -r '.extensions.commands["linux:Alt+Shift+L"].extension' "$preferences") == "$ghost_id" ]] ||
   fail "migration leaves preferences alone while the lock's pid holds the profile open"
 pass "migration defers to a lock whose pid holds the profile open"
+
+# A descriptor closing between the glob and the read fails readlink for that
+# one alone, and what it did read still places the browser in the profile.
+cat >"$stub_bin/readlink" <<STUB
+#!/bin/bash
+[[ \$1 == -- ]] && set -- "\$@" /proc/$holder_pid/fd/closed
+exec $(command -v readlink) "\$@"
+STUB
+chmod +x "$stub_bin/readlink"
+run_migration && fail "migration defers when one of the lock pid's descriptors closes mid-read"
+rm "$stub_bin/readlink"
+[[ $(jq -r '.extensions.commands["linux:Alt+Shift+L"].extension' "$preferences") == "$ghost_id" ]] ||
+  fail "migration leaves preferences alone when one of the lock pid's descriptors closes mid-read"
+pass "migration defers when one of the lock pid's descriptors closes mid-read"
 kill "$holder_pid" 2>/dev/null
 holder_pid=""
 close_browser

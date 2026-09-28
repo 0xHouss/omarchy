@@ -154,7 +154,7 @@ profile_open() {
     # The kernel hands that number on to whatever starts next, so the lock
     # holds only while the pid still keeps a file open inside this profile —
     # a browser holds dozens, from leveldb locks to the login database.
-    fds=$(readlink -- /proc/$pid/fd/* 2>/dev/null) || fds=""
+    fds=$(readlink -- /proc/$pid/fd/* 2>/dev/null || true)
     [[ $fds == *"$1/"* ]] && return 0
 
     # A browser whose files this cannot see — one reaching the profile through
