@@ -195,7 +195,7 @@ Item {
     root.monitorDpmsKnown = false
     if (!wakeCoalesceTimer.running) {
       wakeCoalesceTimer.start()
-      Quickshell.execDetached(["bash", "-c", "omarchy-system-wake"])
+      Quickshell.execDetached(["timeout", "10", "bash", "-c", "omarchy-system-wake"])
     }
     if (lockRequested) armBlankTimer()
   }
@@ -207,11 +207,13 @@ Item {
     runWake()
   }
 
+  // Detached so a hung child cannot latch the next request; the timeout keeps
+  // hung children from piling up one per coalescing window instead.
   function runBlank() {
     root.displaysBlank = true
     root.monitorDpmsKnown = false
     logEvent("blank-requested")
-    Quickshell.execDetached(["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"])
+    Quickshell.execDetached(["timeout", "10", "bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"])
   }
 
   function screenBlank(screenName) {

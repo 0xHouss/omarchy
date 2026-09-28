@@ -18,7 +18,7 @@ assert(
 )
 
 assert(
-  /function runBlank\(\) \{[^}]*Quickshell\.execDetached\(\["bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"\]\)/.test(serviceQml),
+  /function runBlank\(\) \{[^}]*Quickshell\.execDetached\(\["timeout", "10", "bash", "-c", "omarchy-brightness-keyboard off; omarchy-brightness-display off"\]\)/.test(serviceQml),
   'the blank spawns statelessly'
 )
 
@@ -26,7 +26,7 @@ assert(
 // guard without a replacement forks a shell per motion event. A Timer rather
 // than wall-clock arithmetic, so a clock stepping backwards cannot suppress it.
 assert(
-  /function runWake\(\) \{[^}]*if \(!wakeCoalesceTimer\.running\) \{\s*wakeCoalesceTimer\.start\(\)\s*Quickshell\.execDetached\(\["bash", "-c", "omarchy-system-wake"\]\)/.test(serviceQml),
+  /function runWake\(\) \{[^}]*if \(!wakeCoalesceTimer\.running\) \{\s*wakeCoalesceTimer\.start\(\)\s*Quickshell\.execDetached\(\["timeout", "10", "bash", "-c", "omarchy-system-wake"\]\)/.test(serviceQml),
   'the wake spawns statelessly, coalesced on a timer instead of on a process it can no longer see'
 )
 
