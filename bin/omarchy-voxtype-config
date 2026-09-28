@@ -5,8 +5,8 @@
 set -e
 
 if omarchy-cmd-missing voxtype; then
-  exec omarchy-launch-floating-terminal-with-presentation omarchy-voxtype-install
+  omarchy-launch-floating-terminal-with-presentation omarchy-voxtype-install
+else
+  omarchy-launch-floating-terminal-with-presentation "voxtype configure"
+  omarchy-restart-shell
 fi
-
-omarchy-launch-floating-terminal-with-presentation "voxtype configure"
-omarchy-restart-shell
