@@ -6,12 +6,8 @@ screensaver_in_focus() {
   hyprctl activewindow -j | jq -e '.class == "org.omarchy.screensaver"' >/dev/null 2>&1
 }
 
-# `hyprctl activewindow` only ever reports toplevels. A layer surface holding
-# keyboard focus -- an open bar panel -- leaves the previously focused terminal
-# as the active window, so a screensaver that maps behind one never becomes
-# active at all. Only a screensaver that has actually held focus can have lost
-# it, so latch that first and treat the absence of focus as a dismissal only
-# afterwards.
+# activewindow only reports toplevels, so while a layer surface like an open panel holds keyboard focus,
+# the screensaver is never the active window. Only count losing focus as a dismissal once it has been seen with it.
 was_focused=0
 
 exit_screensaver() {
