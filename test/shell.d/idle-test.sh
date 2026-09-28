@@ -37,18 +37,11 @@ assertDeepEqual(
 const fs = require('fs')
 const serviceQml = fs.readFileSync(path.join(root, 'shell/plugins/services/idle/Service.qml'), 'utf8')
 
-// The lock plugin runs in this process, so its state is readable without the
-// shell-out, which reports nothing at all when the IPC call fails.
+// The lock service is never handed to other plugins, so a lookup for it here
+// always comes back empty and would guard nothing.
 assert(
-  /readonly property var lockService: shell && shell\.serviceFor \? shell\.serviceFor\("omarchy\.lock"\) : null/.test(serviceQml),
-  'the idle service reads lock state from the lock service in-process'
-)
-
-// omarchy-system-lock takes about a second to reach the lock service, and the
-// lock is not visible anywhere until it gets there.
-assert(
-  /readonly property bool lockInFlight: lockCommandPending \|\| !!\(lockService && lockService\.locked\)/.test(serviceQml),
-  'a lock counts as in flight from the moment its command is spawned'
+  !/serviceFor\("omarchy\.lock"\)/.test(serviceQml),
+  'the idle service does not look up the lock service'
 )
 
 assert(
@@ -71,14 +64,14 @@ assert(
 // lockSystem() clears idledThisCycle, so the next idle re-assertion would
 // otherwise start a fresh cycle on top of the lock it just asked for.
 assert(
-  /if \(root\.lockInFlight\) \{\s*\n\s*logEvent\("idle-cycle-skip", "lock-in-flight"\)\s*\n\s*return\s*\n\s*\}\s*\n\s*logEvent\("idle-cycle-start"/.test(serviceQml),
+  /if \(root\.lockCommandPending\) \{\s*\n\s*logEvent\("idle-cycle-skip", "lock-in-flight"\)\s*\n\s*return\s*\n\s*\}\s*\n\s*logEvent\("idle-cycle-start"/.test(serviceQml),
   'no idle cycle begins while a lock is in flight'
 )
 
 // screensaver <= lock makes screensaverDelaySeconds 0, so a cycle that slips
 // through launches a screensaver into the pending lock immediately.
 assert(
-  /function launchScreensaver\(\) \{\s*\n\s*if \(root\.lockInFlight\) \{\s*\n\s*logEvent\("screensaver-skip", "lock-in-flight"\)\s*\n\s*return/.test(serviceQml),
+  /function launchScreensaver\(\) \{\s*\n\s*if \(root\.lockCommandPending\) \{\s*\n\s*logEvent\("screensaver-skip", "lock-in-flight"\)\s*\n\s*return/.test(serviceQml),
   'no screensaver launches while a lock is in flight'
 )
 JS

@@ -25,12 +25,8 @@ Item {
   readonly property bool idleEnabled: stayAwakeStateLoaded && !stayAwake
   readonly property string screensaverClass: "org.omarchy.screensaver"
 
-  // The lock plugin is a service in this same process, so its state is readable
-  // directly. The shell-out guard below cannot see a lock that is still in
-  // flight, and reports nothing at all when the IPC call fails.
-  readonly property var lockService: shell && shell.serviceFor ? shell.serviceFor("omarchy.lock") : null
-  readonly property bool lockInFlight: lockCommandPending || !!(lockService && lockService.locked)
-
+  // The lock service is never handed to other plugins, so until the lock command
+  // returns, nothing here can tell that a lock is on its way.
   property bool lockCommandPending: false
   property bool stayAwake: false
   property bool stayAwakeStateLoaded: false
@@ -70,7 +66,7 @@ Item {
   }
 
   function launchScreensaver() {
-    if (root.lockInFlight) {
+    if (root.lockCommandPending) {
       logEvent("screensaver-skip", "lock-in-flight")
       return
     }
@@ -109,7 +105,7 @@ Item {
     // idle re-assertion is free to start a whole new cycle -- and with the
     // usual screensaver <= lock configuration that cycle launches a screensaver
     // immediately, into a session that is on its way down.
-    if (root.lockInFlight) {
+    if (root.lockCommandPending) {
       logEvent("idle-cycle-skip", "lock-in-flight")
       return
     }
@@ -213,7 +209,7 @@ Item {
       stayAwakeStateLoaded: root.stayAwakeStateLoaded,
       stayAwakeStatePath: root.stayAwakeStatePath,
       idle: idleMonitor.isIdle,
-      lockInFlight: root.lockInFlight,
+      lockCommandPending: root.lockCommandPending,
       inIdleCycle: root.idledThisCycle,
       screensaverStarted: root.screensaverStartedThisCycle,
       screensaver: root.screensaverTimeoutSeconds,
