@@ -37,7 +37,11 @@ if [[ -f $user_config_file ]]; then
   cp -fd "$user_config_file" "$backup_config_file"
 
   # Replace config with default content (--remove-destination is used to prevent symlinked content override if $user_config_file is a symlink)
-  cp --remove-destination "$default_config_file" "$user_config_file"
+  if [[ -L $user_config_file ]]; then
+    cp --remove-destination "$default_config_file" "$user_config_file"
+  else
+    cp -f "$default_config_file" "$user_config_file"
+  fi
 
   echo -e "\e[31mReplaced $user_config_file with new Omarchy default.\nSaved backup as ${backup_config_file}.\n\n\e[32mChanges:\e[0m"
   diff "$user_config_file" "$backup_config_file" || true
