@@ -95,7 +95,11 @@ assert_podman_handover() {
   fi
 }
 
-dc() { podman-compose --podman-args=--remote=false -f "$COMPOSE_FILE" "$@"; }
+dc() {
+  local engine
+  engine=$(type -P omarchy-podman-local) || return 1
+  podman-compose --podman-path="$engine" -f "$COMPOSE_FILE" "$@"
+}
 
 with_vm_lock() {
   local fd rc=0
