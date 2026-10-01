@@ -9,4 +9,19 @@ if omarchy-cmd-present mise; then
   # days after they ship. Running omarchy update is the user asking for current
   # versions now, which is the same call the mup alias makes by hand.
   MISE_MINIMUM_RELEASE_AGE=0 mise up
+
+  # Grok's npm launcher runs ~/.grok/bin/grok whenever it exists, and the
+  # package's install script that points it at a new release doesn't run
+  # under mise, so updates never took effect. Dropping a link to an older
+  # release lets the launcher unpack the installed one, which --version does
+  # now rather than on the next session.
+  if grok_dir=$(mise where npm:@xai-official/grok 2>/dev/null) && [[ -n $grok_dir ]]; then
+    grok_link="$HOME/.grok/bin/grok"
+    grok_current="grok-${grok_dir##*/}"
+    if [[ -L $grok_link && $(readlink "$grok_link") != "$grok_current" ]]; then
+      rm -f "$grok_link"
+      find "$HOME/.grok/bin" -maxdepth 1 -name 'grok-*' ! -name "$grok_current" -delete
+      mise x npm:@xai-official/grok -- grok --version >/dev/null 2>&1 || true
+    fi
+  fi
 fi
