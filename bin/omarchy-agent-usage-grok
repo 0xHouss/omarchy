@@ -67,13 +67,19 @@ def parse_time(value):
   return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-# Every session's summary, under ~/.grok/sessions/<folder>/<session>/. Added
-# accounts link their sessions here, so this covers all of them.
-def local_stats():
+# The home Grok uses when nothing selects an account: GROK_HOME when set,
+# as the CLI itself reads it, else ~/.grok.
+def default_home():
+  return Path(os.environ.get("GROK_HOME") or (Path.home() / ".grok"))
+
+
+# Every session's summary, under <home>/sessions/<folder>/<session>/. Added
+# accounts link their sessions to the primary's, so this covers all of them.
+def local_stats(home):
   today = datetime.now().astimezone().date().isoformat()
   prompts = today_prompts = sessions = today_sessions = 0
   days = set()
-  for summary_path in (Path.home() / ".grok" / "sessions").glob("*/*/summary.json"):
+  for summary_path in (Path(home) / "sessions").glob("*/*/summary.json"):
     summary = read_json(summary_path)
     if not isinstance(summary, dict):
       continue
@@ -252,13 +258,15 @@ def main():
     limits = current
     stale, fetched_at = current["stale"], current["fetchedAt"]
   else:
-    home = Path.home() / ".grok"
+    home = default_home()
     tier = plan(home)
     limits = collect_limits(home, cache_key(home, "main"), args.force)
     stale, fetched_at = not limits["live"], limits["fetchedAtMs"]
 
   # Nobody signed in to Grok here: an empty record, which the panel skips.
-  signed_in = bool(login(Path.home() / ".grok")) or bool(accounts)
+  # With accounts registered, the primary is ~/.grok by definition.
+  stats_home = Path.home() / ".grok" if accounts else default_home()
+  signed_in = bool(accounts) or bool(login(stats_home))
   record = {
     "schemaVersion": 1,
     "id": AGENT_ID,
@@ -272,7 +280,7 @@ def main():
     "limitsStale": stale,
     "limitsFetchedAt": fetched_at,
   }
-  record.update(local_stats())
+  record.update(local_stats(stats_home))
   if accounts:
     record["accountSwitch"] = registered[0]["switch"]
     record["accounts"] = accounts

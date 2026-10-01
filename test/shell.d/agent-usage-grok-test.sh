@@ -61,6 +61,14 @@ record=$(collect)
   fail "a machine nobody signed in to Grok on gives an empty record" "$record"
 pass "a machine nobody signed in to Grok on gives an empty record"
 
+# A home chosen with GROK_HOME is the one read, as the CLI itself does.
+signed_in "$test_tmp/custom-grok" token-main u-main "$future" "SuperGrok"
+record=$(GROK_HOME="$test_tmp/custom-grok" collect)
+[[ $(jq -c '{ready, tierLabel, percent: .limits[0].percent}' <<<"$record") == '{"ready":true,"tierLabel":"SuperGrok","percent":0.42}' ]] ||
+  fail "a single Grok account in GROK_HOME is read from there" "$record"
+pass "a single Grok account in GROK_HOME is read from there"
+rm -f "$XDG_CACHE_HOME"/omarchy/agent-usage/grok-limits-*.json
+
 signed_in "$HOME/.grok" token-main u-main "$future" "X Premium+"
 record=$(collect)
 [[ $(jq -c '{ready, tierLabel, stale: .limitsStale, label: .limits[0].label, percent: .limits[0].percent}' <<<"$record") == '{"ready":true,"tierLabel":"X Premium+","stale":false,"label":"Weekly","percent":0.42}' ]] ||
