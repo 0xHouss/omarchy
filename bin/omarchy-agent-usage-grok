@@ -6,9 +6,10 @@
 
 The plan comes from the settings Grok caches from xAI, and the limit from the
 credits endpoint the Grok CLI itself reads for its /usage view, asked with
-each account's own sign-in. Prompts and sessions come from the summary Grok
-keeps beside each session; it records no token counts there, so none are
-claimed. The agents panel only ever reads the JSON this prints.
+each account's own sign-in. Sessions and prompts come from the summary Grok
+keeps beside each session; it records no token counts there, nor when each
+prompt was sent, so neither tokens nor today's prompts are claimed. The
+agents panel only ever reads the JSON this prints.
 """
 
 import argparse
@@ -73,9 +74,11 @@ def default_home():
 
 # Every session's summary, under <home>/sessions/<folder>/<session>/. Added
 # accounts link their sessions to the primary's, so this covers all of them.
+# A resumed session's prompts can't be told apart by day, so today counts
+# sessions only.
 def local_stats(home):
   today = datetime.now().astimezone().date().isoformat()
-  prompts = today_prompts = sessions = today_sessions = 0
+  prompts = sessions = today_sessions = 0
   days = set()
   for summary_path in (Path(home) / "sessions").glob("*/*/summary.json"):
     summary = read_json(summary_path)
@@ -85,16 +88,13 @@ def local_stats(home):
     if not active:
       continue
     day = active.astimezone().date().isoformat()
-    count = int(summary.get("num_messages") or 0)
     sessions += 1
-    prompts += count
+    prompts += int(summary.get("num_messages") or 0)
     days.add(day)
     if day == today:
       today_sessions += 1
-      today_prompts += count
   return {
     "hasLocalStats": sessions > 0,
-    "todayPrompts": today_prompts,
     "todaySessions": today_sessions,
     "totalPrompts": prompts,
     "totalSessions": sessions,

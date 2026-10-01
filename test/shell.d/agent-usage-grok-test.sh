@@ -110,6 +110,7 @@ jq -n --arg at "$now" '{last_active_at: $at, num_messages: 3, current_model_id: 
 jq -n --arg at "$now" '{last_active_at: $at, num_messages: 2}' >"$sessions/today-2/summary.json"
 jq -n '{last_active_at: "2026-01-02T10:00:00Z", num_messages: 5}' >"$sessions/old/summary.json"
 record=$(collect)
-[[ $(jq -c '{hasLocalStats, todayPrompts, todaySessions, totalPrompts, totalSessions, activeDays, tokens: has("todayTotalTokens")}' <<<"$record") == '{"hasLocalStats":true,"todayPrompts":5,"todaySessions":2,"totalPrompts":10,"totalSessions":3,"activeDays":2,"tokens":false}' ]] ||
+[[ $(jq -c '{hasLocalStats, todaySessions, totalPrompts, totalSessions, activeDays, claimed: (has("todayTotalTokens") or has("todayPrompts"))}' <<<"$record") == '{"hasLocalStats":true,"todaySessions":2,"totalPrompts":10,"totalSessions":3,"activeDays":2,"claimed":false}' ]] ||
   fail "Grok counts prompts and sessions from its session summaries" "$record"
 pass "Grok counts prompts and sessions from its session summaries"
+
