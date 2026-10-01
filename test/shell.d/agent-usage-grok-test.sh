@@ -50,7 +50,7 @@ def urlopen(request, timeout=None):
   return io.BytesIO(json.dumps({"config": config}).encode())
 
 collector.urllib.request.urlopen = urlopen
-sys.argv = ["omarchy-agent-usage-grok", "--force"]
+sys.argv = ["omarchy-agent-usage-grok"] + (os.environ.get("COLLECT_ARGS") or "--force").split()
 collector.main()
 PY
 }
@@ -114,3 +114,9 @@ record=$(collect)
   fail "Grok counts prompts and sessions from its session summaries" "$record"
 pass "Grok counts prompts and sessions from its session summaries"
 
+# A limits-only refresh reuses the last scan rather than reading every summary.
+mkdir -p "$sessions/later"
+jq -n --arg at "$now" '{last_active_at: $at, num_messages: 1}' >"$sessions/later/summary.json"
+record=$(COLLECT_ARGS="--limits-only" collect)
+[[ $(jq -r '.totalSessions' <<<"$record") == 3 ]] || fail "a limits-only refresh reuses the session scan" "$record"
+pass "a limits-only refresh reuses the session scan"

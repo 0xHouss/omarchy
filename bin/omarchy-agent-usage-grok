@@ -30,6 +30,8 @@ CREDITS_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 # Grok's own CLI watches its subscription once a minute; a panel opened and
 # shut repeatedly reuses an answer for about that long.
 PROBE_REUSE_SECONDS = 60
+# A limits-only refresh needs fresh limits, not a fresh history scan.
+LIMITS_ONLY_SCAN_REUSE_SECONDS = 900
 
 
 def read_json(path):
@@ -101,6 +103,16 @@ def local_stats(home):
     "activeDays": len(days),
     "activeDates": sorted(days),
   }
+
+
+def cached_local_stats(home, max_age):
+  cache = cache_root() / "grok-stats.json"
+  cached = read_json(cache) or {}
+  if cached.get("home") == str(home) and time.time() - float(cached.get("at") or 0) < max_age:
+    return cached["stats"]
+  stats = local_stats(home)
+  write_json(cache, {"home": str(home), "at": time.time(), "stats": stats})
+  return stats
 
 
 # One login per issuer in auth.json; the first is the CLI's own.
@@ -267,7 +279,7 @@ def main():
     "limitsStale": stale,
     "limitsFetchedAt": fetched_at,
   }
-  record.update(local_stats(stats_home))
+  record.update(cached_local_stats(stats_home, LIMITS_ONLY_SCAN_REUSE_SECONDS if args.limits_only and not args.force else 0))
   if accounts:
     record["accountSwitch"] = registered[0]["switch"]
     record["accounts"] = accounts
