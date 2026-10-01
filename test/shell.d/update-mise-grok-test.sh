@@ -34,3 +34,13 @@ rm -f "$test_tmp/grok-ran"
 PATH="$test_tmp/bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-update-mise" >/dev/null
 [[ ! -e $test_tmp/grok-ran ]] || fail "a current Grok is left alone"
 pass "a current Grok is left alone"
+
+# An unpack that never arrives leaves the old release running.
+rm -f "$HOME/.grok/bin/grok" "$HOME/.grok/bin/grok-1.0.44"
+echo old >"$HOME/.grok/bin/grok-1.0.30"
+ln -s grok-1.0.30 "$HOME/.grok/bin/grok"
+sed -i 's/^  x) .*/  x) exit 1 ;;/' "$test_tmp/bin/mise"
+PATH="$test_tmp/bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-update-mise" >/dev/null
+[[ $(readlink "$HOME/.grok/bin/grok") == "grok-1.0.30" && -e $HOME/.grok/bin/grok-1.0.30 ]] ||
+  fail "a failed unpack keeps the old Grok release" "$(ls -la "$HOME/.grok/bin")"
+pass "a failed unpack keeps the old Grok release"
