@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -37,12 +38,19 @@ def read_json(path):
     return None
 
 
+# A temporary file of its own per write, so overlapping runs can't rename
+# each other's away.
 def write_json(path, payload):
   path = Path(path)
   path.parent.mkdir(parents=True, exist_ok=True)
-  tmp = path.with_name(path.name + ".tmp")
-  tmp.write_text(json.dumps(payload), encoding="utf-8")
-  os.replace(tmp, path)
+  fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      json.dump(payload, handle)
+    os.replace(tmp, path)
+  except Exception:
+    Path(tmp).unlink(missing_ok=True)
+    raise
 
 
 def cache_root():
