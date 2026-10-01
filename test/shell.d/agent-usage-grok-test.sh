@@ -1,0 +1,82 @@
+#!/bin/bash
+
+set -euo pipefail
+
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
+
+require_command jq
+require_command python3
+
+test_tmp=$(mktemp -d)
+trap 'rm -rf "$test_tmp"' EXIT
+
+export HOME="$test_tmp/home"
+export XDG_STATE_HOME="$test_tmp/state"
+export XDG_CACHE_HOME="$test_tmp/cache"
+
+future=$(python3 -c 'import datetime as dt; print((dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=6)).isoformat())')
+past=$(python3 -c 'import datetime as dt; print((dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=1)).isoformat())')
+period_end=$(python3 -c 'import datetime as dt; print((dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=9)).isoformat())')
+
+# A home signed in the way the Grok CLI leaves it.
+signed_in() {
+  mkdir -p "$1"
+  jq -nc --arg token "$2" --arg user "$3" --arg expires "$4" \
+    '{"https://auth.x.ai::client": {key: $token, user_id: $user, email: ($user + "@example.com"), expires_at: $expires}}' >"$1/auth.json"
+  printf '{"payload":"{\\"settings\\":{\\"subscription_tier_display\\":\\"%s\\"}}"}\n' "$5" >"$1/settings_cache.json"
+}
+
+# xAI answers per token, so each home's probe is told apart by its sign-in.
+collect() {
+  COLLECTOR="$ROOT/bin/omarchy-agent-usage-grok" python3 - "$@" <<'PY'
+import importlib.machinery, importlib.util, io, json, os, sys
+
+loader = importlib.machinery.SourceFileLoader("collector", os.environ["COLLECTOR"])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+collector = importlib.util.module_from_spec(spec)
+loader.exec_module(collector)
+
+used = {"token-main": 42.0, "token-side": 7.0}
+end = os.environ["PERIOD_END"]
+
+def urlopen(request, timeout=None):
+  assert request.full_url == collector.CREDITS_URL
+  token = request.get_header("Authorization").split(" ", 1)[1]
+  return io.BytesIO(json.dumps({"creditUsagePercent": used[token], "billingPeriodEnd": end, "billingCycle": "monthly"}).encode())
+
+collector.urllib.request.urlopen = urlopen
+sys.argv = ["omarchy-agent-usage-grok", "--force"]
+collector.main()
+PY
+}
+export PERIOD_END="$period_end"
+
+record=$(collect)
+[[ $(jq -c '{ready, tierLabel, limits}' <<<"$record") == '{"ready":false,"tierLabel":"","limits":[]}' ]] ||
+  fail "a machine nobody signed in to Grok on gives an empty record" "$record"
+pass "a machine nobody signed in to Grok on gives an empty record"
+
+signed_in "$HOME/.grok" token-main u-main "$future" "X Premium+"
+record=$(collect)
+[[ $(jq -c '{ready, tierLabel, stale: .limitsStale, label: .limits[0].label, percent: .limits[0].percent}' <<<"$record") == '{"ready":true,"tierLabel":"X Premium+","stale":false,"label":"Monthly","percent":0.42}' ]] ||
+  fail "Grok's plan and credits come from its own home" "$record"
+[[ -n $(jq -r '.limits[0].resetsAt' <<<"$record") ]] || fail "the credits window says when the period ends" "$record"
+pass "Grok's plan and credits come from its own home"
+
+signed_in "$HOME/.grok" token-main u-main "$past" "X Premium+"
+record=$(collect)
+[[ $(jq -c '{usageStatusText, first: .limits[0].percent, stale: .limitsStale}' <<<"$record") == '{"usageStatusText":"Sign-in expired","first":0.42,"stale":true}' ]] ||
+  fail "a lapsed sign-in keeps the last credits and says so" "$record"
+pass "a lapsed sign-in keeps the last credits and says so"
+
+signed_in "$HOME/.grok" token-main u-main "$future" "X Premium+"
+side="$XDG_STATE_HOME/omarchy/agents/accounts/grok/side"
+signed_in "$side" token-side u-side "$future" "SuperGrok"
+jq -n --arg side "$side" '{active: "side", switch: "auto", threshold: 90, accounts: [
+  {id: "main", label: "Main", home: "", primary: true},
+  {id: "side", label: "Side", home: $side, primary: false}
+]}' >"$XDG_STATE_HOME/omarchy/agents/accounts/grok.json"
+record=$(collect)
+[[ $(jq -c '{tierLabel, first: .limits[0].percent, accounts: [.accounts[] | {id, active, plan, percent: .limits[0].percent}], switch: .accountSwitch}' <<<"$record") == '{"tierLabel":"SuperGrok","first":0.07,"accounts":[{"id":"main","active":false,"plan":"X Premium+","percent":0.42},{"id":"side","active":true,"plan":"SuperGrok","percent":0.07}],"switch":{"mode":"auto","threshold":90}}' ]] ||
+  fail "every Grok account reports its own plan and credits" "$record"
+pass "every Grok account reports its own plan and credits"
