@@ -14,10 +14,11 @@ export PATH="$tmp_dir/bin:$ROOT/bin:$PATH"
 cat > "$tmp_dir/bin/pacman" <<'SH'
 #!/bin/bash
 set -euo pipefail
+[[ ${2:-} != "--" ]] || set -- "$1" "${@:3}"
 case "$1" in
   -Q)
     [[ $2 == "sunshine" && -s $SUNSHINE_VERSION_FILE ]] || exit 1
-    printf 'sunshine %s\n' "$(cat "$SUNSHINE_VERSION_FILE")"
+    printf '%s %s\n' "${SUNSHINE_PACKAGE:-sunshine}" "$(cat "$SUNSHINE_VERSION_FILE")"
     ;;
   -S)
     [[ $* == "-S --noconfirm --needed sunshine>=2026.914.233613" ]] || exit 1
@@ -61,6 +62,14 @@ for version in 2026.516.143833-4 2026.906.222525-1.2; do
   [[ ! -s $SUNSHINE_CALL_LOG ]] || fail "Sunshine upgrade is idempotent"
 done
 pass "vulnerable Sunshine versions are upgraded once"
+
+for version in 2026.516.143833-4 2026.914.233613-1; do
+  echo "$version" > "$SUNSHINE_VERSION_FILE"
+  : > "$SUNSHINE_CALL_LOG"
+  SUNSHINE_PACKAGE=sunshine-bin bash -euo pipefail "$migration" >/dev/null
+  [[ ! -s $SUNSHINE_CALL_LOG ]] || fail "an AUR Sunshine provider must not be replaced"
+done
+pass "AUR Sunshine providers are left to their own source"
 
 echo '2026.906.222525-1.2' > "$SUNSHINE_VERSION_FILE"
 if FAIL_UPGRADE=1 bash -euo pipefail "$migration" >/dev/null; then
