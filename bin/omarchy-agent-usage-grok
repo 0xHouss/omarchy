@@ -75,21 +75,27 @@ def plan(home):
   return str(settings.get("subscription_tier_display") or "")
 
 
-# The credits answer as one limit window: how much of this billing period's
-# included usage is gone, and when the period ends.
+# The credits answer as one limit window: how much of this period's included
+# usage is gone, and when the period ends. The answer is protobuf JSON, which
+# leaves out a field holding zero, so a period with nothing used yet has no
+# percentage at all.
 def credits_limit(data):
   if not isinstance(data, dict):
     return None
+  config = data.get("config") if isinstance(data.get("config"), dict) else data
+  period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+  end = parse_time(period.get("end") or config.get("billingPeriodEnd"))
+  if not end:
+    return None
   try:
-    percent = float(data.get("creditUsagePercent"))
+    percent = float(config.get("creditUsagePercent") or 0) / 100
   except (TypeError, ValueError):
     return None
-  resets = parse_time(data.get("billingPeriodEnd"))
-  cycle = str(data.get("billingCycle") or "").lower()
+  kind = str(period.get("type") or config.get("billingCycle") or "").upper()
   return {
-    "label": "Weekly" if "week" in cycle else "Monthly",
-    "percent": max(0.0, min(1.0, percent / 100 if percent > 1 else percent)),
-    "resetsAt": resets.isoformat() if resets else "",
+    "label": "Weekly" if "WEEK" in kind else "Monthly",
+    "percent": max(0.0, min(1.0, percent)),
+    "resetsAt": end.isoformat(),
   }
 
 
