@@ -6,8 +6,9 @@
 
 The plan comes from the settings Grok caches from xAI, and the limit from the
 credits endpoint the Grok CLI itself reads for its /usage view, asked with
-each account's own sign-in. The agents panel only ever reads the JSON this
-prints.
+each account's own sign-in. Prompts and sessions come from the summary Grok
+keeps beside each session; it records no token counts there, so none are
+claimed. The agents panel only ever reads the JSON this prints.
 """
 
 import argparse
@@ -56,6 +57,39 @@ def parse_time(value):
   except ValueError:
     return None
   return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+# Every session's summary, under ~/.grok/sessions/<folder>/<session>/. Added
+# accounts link their sessions here, so this covers all of them.
+def local_stats():
+  today = datetime.now().astimezone().date().isoformat()
+  prompts = today_prompts = sessions = today_sessions = 0
+  days = set()
+  for summary_path in (Path.home() / ".grok" / "sessions").glob("*/*/summary.json"):
+    summary = read_json(summary_path)
+    if not isinstance(summary, dict):
+      continue
+    active = parse_time(summary.get("last_active_at") or summary.get("updated_at") or summary.get("created_at"))
+    if not active:
+      continue
+    day = active.astimezone().date().isoformat()
+    count = int(summary.get("num_messages") or 0)
+    sessions += 1
+    prompts += count
+    days.add(day)
+    if day == today:
+      today_sessions += 1
+      today_prompts += count
+  return {
+    "hasLocalStats": sessions > 0,
+    "hasPromptStats": True,
+    "todayPrompts": today_prompts,
+    "todaySessions": today_sessions,
+    "totalPrompts": prompts,
+    "totalSessions": sessions,
+    "activeDays": len(days),
+    "activeDates": sorted(days),
+  }
 
 
 # One login per issuer in auth.json; the first is the CLI's own.
@@ -223,7 +257,6 @@ def main():
     "name": AGENT_NAME,
     "updatedAt": datetime.now(timezone.utc).isoformat(),
     "ready": signed_in,
-    "hasLocalStats": False,
     "tierLabel": tier,
     "usageStatusText": limits["usageStatusText"] if signed_in else "",
     "authHelpText": limits["authHelpText"],
@@ -231,6 +264,7 @@ def main():
     "limitsStale": stale,
     "limitsFetchedAt": fetched_at,
   }
+  record.update(local_stats())
   if accounts:
     record["accountSwitch"] = registered[0]["switch"]
     record["accounts"] = accounts
