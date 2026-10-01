@@ -58,8 +58,6 @@ def cache_root():
 
 
 def parse_time(value):
-  if isinstance(value, (int, float)):
-    return datetime.fromtimestamp(value / 1000 if value > 1e12 else value, timezone.utc)
   try:
     parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
   except ValueError:
@@ -83,7 +81,7 @@ def local_stats(home):
     summary = read_json(summary_path)
     if not isinstance(summary, dict):
       continue
-    active = parse_time(summary.get("last_active_at") or summary.get("updated_at") or summary.get("created_at"))
+    active = parse_time(summary.get("last_active_at"))
     if not active:
       continue
     day = active.astimezone().date().isoformat()
@@ -96,7 +94,6 @@ def local_stats(home):
       today_prompts += count
   return {
     "hasLocalStats": sessions > 0,
-    "hasPromptStats": True,
     "todayPrompts": today_prompts,
     "todaySessions": today_sessions,
     "totalPrompts": prompts,
@@ -128,22 +125,12 @@ def plan(home):
 # leaves out a field holding zero, so a period with nothing used yet has no
 # percentage at all.
 def credits_limit(data):
-  if not isinstance(data, dict):
-    return None
-  config = data.get("config") if isinstance(data.get("config"), dict) else data
-  period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
-  end = parse_time(period.get("end") or config.get("billingPeriodEnd"))
-  if not end:
-    return None
-  try:
-    percent = float(config.get("creditUsagePercent") or 0) / 100
-  except (TypeError, ValueError):
-    return None
-  kind = str(period.get("type") or config.get("billingCycle") or "").upper()
+  config = data["config"]
+  period = config["currentPeriod"]
   return {
-    "label": "Weekly" if "WEEK" in kind else "Monthly",
-    "percent": max(0.0, min(1.0, percent)),
-    "resetsAt": end.isoformat(),
+    "label": "Weekly" if "WEEK" in str(period.get("type")) else "Monthly",
+    "percent": max(0.0, min(1.0, float(config.get("creditUsagePercent") or 0) / 100)),
+    "resetsAt": parse_time(period["end"]).isoformat(),
   }
 
 
@@ -274,9 +261,9 @@ def main():
     "updatedAt": datetime.now(timezone.utc).isoformat(),
     "ready": signed_in,
     "tierLabel": tier,
-    "usageStatusText": limits["usageStatusText"] if signed_in else "",
+    "usageStatusText": limits["usageStatusText"],
     "authHelpText": limits["authHelpText"],
-    "limits": limits["limits"] if signed_in else [],
+    "limits": limits["limits"],
     "limitsStale": stale,
     "limitsFetchedAt": fetched_at,
   }
