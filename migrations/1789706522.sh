@@ -7,7 +7,15 @@ echo "Register imv for AVIF, HEIF, HEIC, and JXL"
 # launcher itself, so it only lists imv for these types after the rebuild.
 dest="$HOME/.local/share/applications/imv.desktop"
 stock="MimeType=image/png;image/jpeg;image/jpg;image/gif;image/bmp;image/webp;image/tiff;image/x-xcf;image/x-portable-pixmap;image/x-xbitmap;"
-if [[ -f $dest ]] && grep -qxF "$stock" "$dest"; then
-  sed -i --follow-symlinks "s|^$stock\$|${stock}image/avif;image/heif;image/heic;image/jxl;|" "$dest"
-  update-desktop-database "$HOME/.local/share/applications"
+registered="${stock}image/avif;image/heif;image/heic;image/jxl;"
+if [[ -f $dest ]]; then
+  if grep -qxF "$stock" "$dest"; then
+    sed -i --follow-symlinks "s|^$stock\$|$registered|" "$dest"
+  fi
+
+  # Rebuild for the registered line too, so a retry after a failed rebuild
+  # finishes the job instead of finding nothing left to append.
+  if grep -qxF "$registered" "$dest"; then
+    update-desktop-database "$HOME/.local/share/applications"
+  fi
 fi

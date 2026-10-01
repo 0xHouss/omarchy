@@ -67,6 +67,19 @@ else
   skip "update-desktop-database not installed; skipping the mimeinfo.cache contents check"
 fi
 
+new_home interrupted
+old_launcher >"$launcher"
+mkdir -p "$test_dir/failing-bin"
+printf '#!/bin/bash\nexit 1\n' >"$test_dir/failing-bin/update-desktop-database"
+chmod +x "$test_dir/failing-bin/update-desktop-database"
+PATH="$test_dir/failing-bin:$PATH" HOME="$home" OMARCHY_PATH="$ROOT" bash -euo pipefail "$migration" >/dev/null &&
+  fail "a failed cache rebuild fails the migration"
+[[ ! -e $apps/mimeinfo.cache ]] || fail "a failed cache rebuild leaves no cache"
+run_migration
+[[ -f $apps/mimeinfo.cache ]] || fail "a retry rebuilds the cache the failed run left stale"
+cmp -s "$launcher" "$new_launcher" || fail "a retry leaves the launcher as the shipped one" "$(cat "$launcher")"
+pass "a retry after a failed cache rebuild completes it"
+
 new_home edited
 old_launcher | sed 's#^Exec=imv %F$#Exec=imv-dir %F#' >"$launcher"
 echo 'NoDisplay=true' >>"$launcher"
