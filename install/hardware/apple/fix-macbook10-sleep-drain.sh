@@ -12,7 +12,6 @@ if omarchy-hw-match "MacBook10,1"; then
   udev_rules=${OMARCHY_MACBOOK10_SLEEP_UDEV:-/etc/udev/rules.d/99-omarchy-macbook10-wifi-wakeup.rules}
   unit_path=${OMARCHY_MACBOOK10_SLEEP_UNIT:-/etc/systemd/system/omarchy-macbook10-sleep-drain.service}
   sleep_hook=${OMARCHY_MACBOOK10_SLEEP_HOOK:-/usr/lib/systemd/system-sleep/omarchy-macbook10-sleep-drain}
-  drain_bin=${OMARCHY_MACBOOK10_SLEEP_BIN:-${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-hw-macbook10-sleep-drain}
   logind_dropin=${OMARCHY_MACBOOK10_SLEEP_LOGIND:-/etc/systemd/logind.conf.d/30-macbook10-suspend-then-hibernate.conf}
   sleep_dropin=${OMARCHY_MACBOOK10_SLEEP_CONF:-/etc/systemd/sleep.conf.d/30-macbook10-hibernate-delay.conf}
 
@@ -23,21 +22,22 @@ if omarchy-hw-match "MacBook10,1"; then
 ACTION=="add|change", SUBSYSTEM=="pci", ATTR{vendor}=="0x14e4", ATTR{device}=="0x43a3", TEST=="power/wakeup", ATTR{power/wakeup}="disabled"
 EOF
 
-  sudo tee "$unit_path" >/dev/null <<EOF
+  # Root runs the packaged copy, never $OMARCHY_PATH, which a dev link points at a user-writable checkout.
+  sudo tee "$unit_path" >/dev/null <<'EOF'
 [Unit]
 Description=Omarchy MacBook10,1 Wi-Fi wakeup disable for S3
 
 [Service]
 Type=oneshot
-ExecStart=$drain_bin
+ExecStart=/usr/bin/omarchy-hw-macbook10-sleep-drain
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  sudo tee "$sleep_hook" >/dev/null <<EOF
+  sudo tee "$sleep_hook" >/dev/null <<'EOF'
 #!/bin/bash
-exec "$drain_bin"
+exec /usr/bin/omarchy-hw-macbook10-sleep-drain
 EOF
   sudo chmod 755 "$sleep_hook"
 

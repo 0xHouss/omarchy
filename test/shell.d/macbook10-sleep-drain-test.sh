@@ -101,9 +101,6 @@ hook="$test_tmp/sleep-hook"
 logind="$test_tmp/30-macbook10-suspend-then-hibernate.conf"
 sleep_conf="$test_tmp/30-macbook10-hibernate-delay.conf"
 resume="$test_tmp/omarchy_resume.conf"
-drain_copy="$test_tmp/omarchy-hw-macbook10-sleep-drain"
-cp "$apply" "$drain_copy"
-chmod +x "$drain_copy"
 
 run_leaf() {
   : >"$calls"
@@ -114,7 +111,6 @@ run_leaf() {
     OMARCHY_MACBOOK10_SLEEP_UDEV="$udev" \
     OMARCHY_MACBOOK10_SLEEP_UNIT="$unit" \
     OMARCHY_MACBOOK10_SLEEP_HOOK="$hook" \
-    OMARCHY_MACBOOK10_SLEEP_BIN="$drain_copy" \
     OMARCHY_MACBOOK10_SLEEP_LOGIND="$logind" \
     OMARCHY_MACBOOK10_SLEEP_CONF="$sleep_conf" \
     OMARCHY_MACBOOK10_RESUME_CONF="$2" \
@@ -131,11 +127,13 @@ run_leaf "MacBook10,1" "$test_tmp/missing-resume.conf"
 [[ -f $udev ]] || fail "setup writes the udev rule"
 grep -Fq 'ATTR{device}=="0x43a3"' "$udev" || fail "the udev rule matches BCM4350" "$(cat "$udev")"
 [[ -f $unit ]] || fail "setup writes the systemd unit"
-grep -Fq "ExecStart=$drain_copy" "$unit" ||
-  fail "the unit runs the sleep-drain command" "$(cat "$unit")"
+grep -Fxq "ExecStart=/usr/bin/omarchy-hw-macbook10-sleep-drain" "$unit" ||
+  fail "the unit runs the packaged sleep-drain command" "$(cat "$unit")"
 [[ -x $hook ]] || fail "setup installs an executable sleep hook"
-grep -Fq "exec \"$drain_copy\"" "$hook" ||
-  fail "the sleep hook re-applies the wakeup disable" "$(cat "$hook")"
+grep -Fxq "exec /usr/bin/omarchy-hw-macbook10-sleep-drain" "$hook" ||
+  fail "the sleep hook runs the packaged sleep-drain command" "$(cat "$hook")"
+! grep -Fq "$ROOT" "$unit" "$hook" ||
+  fail "root never runs the checkout OMARCHY_PATH points at" "$(cat "$unit" "$hook")"
 [[ ! -f $logind ]] || fail "setup does not change the lid action"
 grep -Fq $'systemctl\tenable\t--now\tomarchy-macbook10-sleep-drain.service' "$calls" ||
   fail "setup enables the sleep-drain service" "$(cat "$calls")"
@@ -158,7 +156,6 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_MACBOOK10_SLEEP_UDEV="$udev" \
   OMARCHY_MACBOOK10_SLEEP_UNIT="$unit" \
   OMARCHY_MACBOOK10_SLEEP_HOOK="$hook" \
-  OMARCHY_MACBOOK10_SLEEP_BIN="$drain_copy" \
   OMARCHY_MACBOOK10_SLEEP_LOGIND="$logind" \
   OMARCHY_MACBOOK10_SLEEP_CONF="$sleep_conf" \
   OMARCHY_MACBOOK10_RESUME_CONF="$resume" \
