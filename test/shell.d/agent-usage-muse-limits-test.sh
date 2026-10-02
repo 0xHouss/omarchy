@@ -170,6 +170,12 @@ nosnap=$(run_collector --force)
   fail "Muse collector stays silent for an active plan without usage windows" "$nosnap"
 pass "Muse collector stays silent for an active plan without usage windows"
 
+# A signed-in plan shows before its first session; pay-as-you-go with no
+# usage has nothing to show.
+[[ $(jq -r '.ready' <<<"$nosnap") == "true" && $(jq -r '.ready' <<<"$payg") == "false" ]] ||
+  fail "Muse collector shows a signed-in plan without sessions" "$nosnap"
+pass "Muse collector shows a signed-in plan without sessions"
+
 [[ $(jq 'has("retryAdvised")' <<<"$nosnap") == "false" ]] ||
   fail "Muse collector does not retry an active plan without usage windows" "$nosnap"
 pass "Muse collector does not retry an active plan without usage windows"

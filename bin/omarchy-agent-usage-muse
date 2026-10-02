@@ -325,12 +325,74 @@ def scan_native_muse_sessions():
                 input_tokens, output_tokens, cache_read, cache_write)
 
 
+def opencode_db():
+  # The database opencode itself reads, as the opencode collector finds it:
+  # OPENCODE_DB when set (a relative name lives beside the default one), and
+  # opencode-v2.db only for the builds that wrote nothing else.
+  root = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode"
+  configured = os.environ.get("OPENCODE_DB", "").strip()
+  if configured:
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else root / path
+  normal = root / "opencode.db"
+  legacy = root / "opencode-v2.db"
+  return legacy if not normal.is_file() and legacy.is_file() else normal
+
+
+def table_columns(conn, table):
+  try:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+  except sqlite3.Error:
+    return set()
+
+
+def add_opencode_row(message_id, session_id, entry, row_type, created, seen):
+  # The original `message` table keeps the provider and model at the top
+  # level; V2's `session_message` nests them under `model` and keeps the role
+  # in its `type` column, with a compaction's tokens spent like a reply's.
+  if not isinstance(entry, dict) or (entry.get("role") or row_type) not in ("assistant", "compaction"):
+    return
+  nested = entry.get("model") if isinstance(entry.get("model"), dict) else {}
+  # The meta provider only serves Muse Spark models, so any model on it
+  # counts (muse-spark 1.1/1.2/1.3, ...). Muse Spark through the Zen gateway
+  # is OpenCode usage, so the opencode record keeps it.
+  if str(entry.get("providerID") or nested.get("providerID") or "") != "meta":
+    return
+  model = model_name(entry.get("modelID") or nested.get("id") or nested.get("modelID"))
+  if model is None:
+    return
+  tokens = entry.get("tokens")
+  if not isinstance(tokens, dict):
+    tokens = {}
+  cache = tokens.get("cache")
+  if not isinstance(cache, dict):
+    cache = {}
+  # opencode reports input exclusive of cache: keep the token buckets
+  # separate, no subtraction.
+  input_tokens = token_number(tokens.get("input"))
+  output_tokens = token_number(tokens.get("output")) + token_number(tokens.get("reasoning"))
+  cache_read = token_number(cache.get("read"))
+  cache_write = token_number(cache.get("write"))
+  if not (input_tokens or output_tokens or cache_read or cache_write):
+    return
+  # A message migrated into both stores counts once.
+  if message_id in seen:
+    return
+  seen.add(message_id)
+  # A malformed time object must not drop the row's valid tokens: non-dict
+  # shapes fall back to the row's own time, then today.
+  stamped = entry.get("time")
+  day = local_day((stamped.get("created") if isinstance(stamped, dict) else None) or created)
+  add_usage(day, "opencode:" + str(session_id), model, input_tokens, output_tokens, cache_read, cache_write)
+
+
 def scan_opencode_sessions():
-  """opencode rows for meta provider Muse models.
+  """opencode rows for meta provider Muse models, from both of opencode's
+  message stores, deduplicated by message id.
 
   Returns True when the scan ran to completion (safe to cache).
   """
-  db = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
+  db = opencode_db()
   if not db.is_file():
     return True
   try:
@@ -339,54 +401,42 @@ def scan_opencode_sessions():
     return False
   try:
     conn.execute("PRAGMA query_only = ON")
+    tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    seen = set()
     # LIKE gates are pure acceleration (see the codex collector for the full
-    # rationale); the json_extract gates match the Python filter below, which
-    # stays the authority for the rows that reach it. The provider gate keeps
-    # assistant rows from other providers out of the Python parse.
-    query = (
-      "SELECT session_id, data FROM message"
-      " WHERE data LIKE '%\"role\"%:%\"assistant\"%'"
-      " AND data LIKE '%\"providerID\"%:%\"meta\"%'"
-      " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END = 'assistant'"
-      " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.providerID') END = 'meta'"
-    )
-    for session_id, raw in conn.execute(query):
-      try:
-        entry = json.loads(raw)
-        if not isinstance(entry, dict) or entry.get("role") != "assistant":
+    # rationale); the Python filter stays the authority for the rows that
+    # reach it. The provider gate keeps other providers' rows out of the parse.
+    columns = table_columns(conn, "session_message") if "session_message" in tables else set()
+    if {"id", "session_id", "type", "data"} <= columns:
+      created = "m.time_created" if "time_created" in columns else "NULL"
+      source = "session_message m"
+      fork_filter = ""
+      if "time_created" in columns and "session_v2" in tables and {"id", "fork_session_id", "time_created"} <= table_columns(conn, "session_v2"):
+        # A fork copies its source session's messages under new ids; only
+        # what came after the fork was spent in it.
+        source += " LEFT JOIN session_v2 s ON s.id = m.session_id"
+        fork_filter = " AND (s.fork_session_id IS NULL OR m.time_created >= s.time_created)"
+      for message_id, session_id, row_type, time_created, raw in conn.execute(
+        f"SELECT m.id, m.session_id, m.type, {created}, m.data FROM {source}"
+        " WHERE m.type IN ('assistant', 'compaction')"
+        " AND m.data LIKE '%\"providerID\"%:%\"meta\"%'" + fork_filter
+      ):
+        try:
+          add_opencode_row(str(message_id), session_id, json.loads(raw), str(row_type or ""), time_created, seen)
+        except Exception:
           continue
-        provider = str(entry.get("providerID") or "")
-        model = model_name(entry.get("modelID"))
-        if model is None:
+    columns = table_columns(conn, "message") if "message" in tables else set()
+    if {"session_id", "data"} <= columns:
+      row_id = "id" if "id" in columns else "rowid"
+      for message_id, session_id, raw in conn.execute(
+        f"SELECT {row_id}, session_id, data FROM message"
+        " WHERE data LIKE '%\"role\"%:%\"assistant\"%'"
+        " AND data LIKE '%\"providerID\"%:%\"meta\"%'"
+      ):
+        try:
+          add_opencode_row(str(message_id), session_id, json.loads(raw), "", None, seen)
+        except Exception:
           continue
-        # The meta provider only serves Muse Spark models, so any model on it
-        # counts (muse-spark 1.1/1.2/1.3, ...). Muse Spark through the Zen
-        # gateway is OpenCode usage, so the opencode record keeps it.
-        if provider != "meta":
-          continue
-        tokens = entry.get("tokens")
-        if not isinstance(tokens, dict):
-          tokens = {}
-        cache = tokens.get("cache")
-        if not isinstance(cache, dict):
-          cache = {}
-        # opencode reports input exclusive of cache: keep the token buckets
-        # separate, no subtraction.
-        input_tokens = token_number(tokens.get("input"))
-        output_tokens = token_number(tokens.get("output")) + token_number(tokens.get("reasoning"))
-        cache_read = token_number(cache.get("read"))
-        cache_write = token_number(cache.get("write"))
-        if not (input_tokens or output_tokens or cache_read or cache_write):
-          continue
-        # A malformed time object must not drop the row's valid tokens:
-        # non-dict shapes fall back to today via local_day(None).
-        stamped = entry.get("time")
-        created = stamped.get("created") if isinstance(stamped, dict) else None
-        day = local_day(created)
-        add_usage(day, "opencode:" + str(session_id), model,
-                  input_tokens, output_tokens, cache_read, cache_write)
-      except Exception:
-        continue
   except sqlite3.Error:
     return False
   finally:
@@ -646,7 +696,7 @@ def cache_root():
 
 
 def scan_cache_paths():
-  db = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
+  db = opencode_db()
   digest = hashlib.sha1(
     (str(Path.home()) + "\n" + str(muse_sessions_root()) + "\n" + str(db)).encode("utf-8")
   ).hexdigest()[:16]
@@ -766,7 +816,8 @@ def main():
     "id": AGENT_ID,
     "name": AGENT_NAME,
     "updatedAt": datetime.now(timezone.utc).isoformat(),
-    "ready": number(stats.get("totalPrompts")) > 0 or len(limits["limits"]) > 0,
+    # A signed-in plan shows even before its first session or window.
+    "ready": number(stats.get("totalPrompts")) > 0 or len(limits["limits"]) > 0 or limits["tierLabel"] not in ("", "Account"),
     "hasLocalStats": True,
     # Prompts and sessions are counted, so the panel shows them in tooltips.
     "hasPromptStats": True,

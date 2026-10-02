@@ -352,3 +352,20 @@ result_odd=$(HOME="$odd_home" XDG_DATA_HOME="$odd_home/data" XDG_CACHE_HOME="$od
 [[ $(jq -r '.modelUsage.["odd-cache-model"] | [.inputTokens, .outputTokens] == [11, 0]' <<<"$result_odd") == "true" ]] ||
   fail "Muse collector keeps input past a malformed cache object" "$result_odd"
 pass "Muse collector survives odd timestamp and token shapes"
+
+# OpenCode V2 nests the provider under `model` in session_message. A message
+# migrated into both stores counts once, and Zen's Muse Spark stays out.
+v2_home="$TEST_HOME/v2"
+mkdir -p "$v2_home/data/opencode"
+sqlite3 "$v2_home/data/opencode/opencode.db" <<EOF
+CREATE TABLE message (id TEXT, session_id TEXT, data TEXT);
+CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, time_created INTEGER, data TEXT);
+INSERT INTO session_message VALUES ('m1', 'v2-a', 'assistant', $now_ms, '{"model":{"providerID":"meta","id":"muse-spark-1.3"},"tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":$now_ms}}');
+INSERT INTO session_message VALUES ('m2', 'v2-a', 'compaction', $now_ms, '{"model":{"providerID":"meta","id":"muse-spark-1.3"},"tokens":{"input":5,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":$now_ms}}');
+INSERT INTO session_message VALUES ('m3', 'v2-a', 'assistant', $now_ms, '{"model":{"providerID":"opencode","id":"muse-spark-1.3-free"},"tokens":{"input":999,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":$now_ms}}');
+INSERT INTO message VALUES ('m1', 'v2-a', '{"role":"assistant","providerID":"meta","modelID":"muse-spark-1.3","tokens":{"input":100,"output":10,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":$now_ms}}');
+EOF
+result_v2=$(HOME="$v2_home" XDG_DATA_HOME="$v2_home/data" XDG_CACHE_HOME="$v2_home/cache" MUSE_DATA_DIR="$v2_home/muse-data" "$ROOT/bin/omarchy-agent-usage-muse" --force)
+[[ $(jq -c '{todayTotalTokens, totalPrompts, totalSessions}' <<<"$result_v2") == '{"todayTotalTokens":115,"totalPrompts":2,"totalSessions":1}' ]] ||
+  fail "Muse collector reads OpenCode V2 records once each" "$result_v2"
+pass "Muse collector reads OpenCode V2 records once each"

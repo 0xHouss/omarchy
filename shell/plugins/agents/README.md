@@ -208,8 +208,9 @@ only adds the meter and the spent-of-funded line under the real figure.
 
 Muse reads native CLI sessions from `$XDG_DATA_HOME/muse/sessions`
 (defaulting to `~/.local/share/muse/sessions`, and overridable via
-`MUSE_DATA_DIR`) plus opencode sessions on the `meta` provider. Muse Spark
-through the OpenCode Zen gateway counts in the `opencode` record instead. The
+`MUSE_DATA_DIR`) plus opencode sessions on the `meta` provider, from both of
+opencode's message stores (deduplicated by message id). Muse Spark through
+the OpenCode Zen gateway counts in the `opencode` record instead. The
 OAuth token comes from `MUSE_AUTH_PATH` when set, otherwise from
 `~/.config/muse/auth.json` (which `muse login` creates); the file is only
 ever read, never refreshed or rewritten.
