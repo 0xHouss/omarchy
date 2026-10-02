@@ -27,7 +27,8 @@
         "agy": { "enabled": true },
         "zai": { "enabled": true },
         "ollama": { "enabled": true },
-        "minimax": { "enabled": true }
+        "minimax": { "enabled": true },
+        "openrouter": { "enabled": true }
       },
       "refreshIntervalSec": 900,
       "syncMode": "Off",
