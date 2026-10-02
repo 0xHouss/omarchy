@@ -77,7 +77,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `opencode` | OpenCode Go's usage endpoint (rolling + weekly + monthly), with an API key or the Console session | pi and omp sessions on the Zen and Go providers, plus opencode's own `message` and `session_message` stores |
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 | `copilot` | Account-wide AI credit allowance (GitHub quota endpoint, or estimated locally) | the Copilot CLI session store's `assistant_usage_events`, with `~/.copilot/session-state` transcripts as fallback |
-| `muse` | The client's key endpoint (session + weekly percents), else local metering only — never estimated | native `muse` CLI session files plus opencode sessions on the `meta` provider or `muse-spark` models |
+| `muse` | The client's key endpoint (session + weekly percents), else local metering only — never estimated | native `muse` CLI session files plus opencode sessions on the `meta` provider |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -207,15 +207,18 @@ only adds the meter and the spent-of-funded line under the real figure.
 
 Muse reads native CLI sessions from `$XDG_DATA_HOME/muse/sessions`
 (defaulting to `~/.local/share/muse/sessions`, and overridable via
-`MUSE_DATA_DIR`) plus opencode sessions on the `meta` provider or
-`muse-spark` models, and the OAuth token from `MUSE_AUTH_PATH` when set,
-otherwise from `~/.config/muse/auth.json` (which `muse login` creates).
+`MUSE_DATA_DIR`) plus opencode sessions on the `meta` provider. Muse Spark
+through the OpenCode Zen gateway counts in the `opencode` record instead. The
+OAuth token comes from `MUSE_AUTH_PATH` when set, otherwise from
+`~/.config/muse/auth.json` (which `muse login` creates); the file is only
+ever read, never refreshed or rewritten.
 
 The collector asks the client's own key endpoint for the subscription's
 session and weekly percents with reset times — the same figures the TUI's
 `/usage` overlay shows. Minting is idempotent (the same Model API key comes
 back every call), so polling is safe; the token travels only in the
-`Authorization` header and neither it nor the returned key is persisted.
+`Authorization` header and neither it nor the returned key is persisted. A
+failed check keeps the last good windows, dimmed, until they reset.
 Pay-as-you-go accounts have no subscription windows, so the tab shows
 measured local usage with no meters — never estimated, never zeroed. An
 active plan that returns no `subs_usage` (Muse Code Power Usage answers this

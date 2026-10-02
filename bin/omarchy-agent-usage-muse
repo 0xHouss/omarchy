@@ -8,9 +8,9 @@ Local metering (always available, no network): token counts, prompt and
 session counts, per-day and per-model breakdowns. Sources (all local):
   - native `muse` CLI sessions in $XDG_DATA_HOME/muse/sessions, defaulting to
     ~/.local/share/muse/sessions (`model_completed` events carry usage),
-  - opencode sessions with providerID == "meta" (any Muse Spark model),
-  - opencode sessions with providerID == "opencode" whose modelID contains
-    "muse-spark" (e.g. muse-spark-1.3-contributor-free via the opencode proxy).
+  - opencode sessions with providerID == "meta" (any Muse Spark model).
+    Muse Spark served through OpenCode Zen (providerID == "opencode") is
+    Zen usage, and the opencode record counts it.
 
 Subscription windows (additive, authoritative only): when the CLI is signed
 in via `muse login`, the collector probes the client's own key endpoint
@@ -19,7 +19,9 @@ in via `muse login`, the collector probes the client's own key endpoint
 session (5-hour) + weekly percents with reset times plus `subs_tier_name` —
 the same figures the TUI's `/usage` overlay shows. Minting is idempotent so
 polling is safe; the token travels only in the Authorization header and
-neither it nor the returned API key is persisted. Pay-as-you-go accounts
+neither it nor the returned API key is persisted, and the login file is only
+ever read, never refreshed or rewritten. A failed check keeps the last good
+windows, marked stale. Pay-as-you-go accounts
 and active plans that return no `subs_usage` (e.g. Muse Code Power Usage)
 have no subscription windows, so limits stay empty — tier plus local
 metering still show. No estimated meters from manual caps: without an
@@ -28,6 +30,7 @@ only ever reads the JSON this prints.
 """
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -323,7 +326,7 @@ def scan_native_muse_sessions():
 
 
 def scan_opencode_sessions():
-  """opencode rows for meta provider Muse models + opencode-proxied muse-spark.
+  """opencode rows for meta provider Muse models.
 
   Returns True when the scan ran to completion (safe to cache).
   """
@@ -339,14 +342,13 @@ def scan_opencode_sessions():
     # LIKE gates are pure acceleration (see the codex collector for the full
     # rationale); the json_extract gates match the Python filter below, which
     # stays the authority for the rows that reach it. The provider gate keeps
-    # assistant rows from other providers — including ones that merely mention
-    # muse-spark in their text — out of the Python parse.
+    # assistant rows from other providers out of the Python parse.
     query = (
       "SELECT session_id, data FROM message"
       " WHERE data LIKE '%\"role\"%:%\"assistant\"%'"
-      " AND (data LIKE '%\"providerID\"%:%\"meta\"%' OR data LIKE '%muse-spark%')"
+      " AND data LIKE '%\"providerID\"%:%\"meta\"%'"
       " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END = 'assistant'"
-      " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.providerID') END IN ('meta', 'opencode')"
+      " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.providerID') END = 'meta'"
     )
     for session_id, raw in conn.execute(query):
       try:
@@ -357,13 +359,10 @@ def scan_opencode_sessions():
         model = model_name(entry.get("modelID"))
         if model is None:
           continue
-        if provider == "meta":
-          # The meta provider only serves Muse Spark models, so any model on
-          # it counts (muse-spark 1.1/1.2/1.3, ...).
-          pass
-        elif provider == "opencode" and "muse-spark" in model.lower():
-          pass  # opencode-proxied Muse Spark (e.g. 1.3-contributor-free)
-        else:
+        # The meta provider only serves Muse Spark models, so any model on it
+        # counts (muse-spark 1.1/1.2/1.3, ...). Muse Spark through the Zen
+        # gateway is OpenCode usage, so the opencode record keeps it.
+        if provider != "meta":
           continue
         tokens = entry.get("tokens")
         if not isinstance(tokens, dict):
@@ -555,50 +554,63 @@ def usable_cached_limits(cached: dict) -> list:
   return [entry for entry in entries if isinstance(entry, dict) and limit_window_open(entry, now)]
 
 
-def collect_limits(force: bool) -> dict:
-  result = {"limits": [], "tierLabel": "Account", "usageStatusText": "", "authHelpText": ""}
+# Keyed by who the token signs in as (the JWT's subject when it is one), so a
+# machine signed in to someone else never shows the last one's windows, and a
+# refreshed token keeps the same cache.
+def limits_cache_path(access_token: str) -> Path:
+  subject = ""
+  parts = access_token.split(".")
+  if len(parts) == 3:
+    try:
+      claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+      subject = str(claims.get("sub") or "") if isinstance(claims, dict) else ""
+    except Exception:
+      subject = ""
+  digest = hashlib.sha256((subject or access_token).encode("utf-8")).hexdigest()[:16]
+  return cache_root() / f"muse-limits-{digest}.json"
 
-  probe_cache = None
-  try:
-    probe_cache = cache_root() / "muse-limits.json"
-    cached = json.loads(probe_cache.read_text(encoding="utf-8")) if probe_cache.exists() else {}
-  except Exception as exc:
-    print(f"omarchy-agent-usage-muse: could not read limits cache ({exc})", file=sys.stderr)
-    cached = {}
-  if not isinstance(cached, dict):
-    cached = {}
-  fallback = usable_cached_limits(cached)
-  fallback_tier = str(cached.get("tierLabel") or "")
+
+def collect_limits(force: bool) -> dict:
+  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": "", "stale": False, "fetchedAtMs": 0}
 
   access_token = read_access_token()
   if access_token == "":
     # No login: PAYG or signed-out. Never estimated, never an auth nag —
-    # local metering is valid on its own. Reuse unexpired cached windows if
-    # a previous subscription probe left any.
-    if fallback:
-      result["limits"] = fallback
-    if fallback_tier:
-      result["tierLabel"] = fallback_tier
+    # local metering is valid on its own.
     return result
 
-  fetched_at = number(cached.get("fetchedAtMs")) / 1000
-  if (fallback or fallback_tier) and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
+  probe_cache = None
+  cached = {}
+  try:
+    probe_cache = limits_cache_path(access_token)
+    cached = json.loads(probe_cache.read_text(encoding="utf-8")) if probe_cache.exists() else {}
+  except Exception as exc:
+    print(f"omarchy-agent-usage-muse: could not read limits cache ({exc})", file=sys.stderr)
+  if not isinstance(cached, dict):
+    cached = {}
+  fallback = usable_cached_limits(cached)
+  fetched_at = number(cached.get("fetchedAtMs"))
+  result["tierLabel"] = str(cached.get("tierLabel") or "") or "Account"
+
+  # The last good windows, dimmed as stale, with when they were measured.
+  def keep_cached():
     result["limits"] = fallback
-    if fallback_tier:
-      result["tierLabel"] = fallback_tier
+    result["stale"] = True
+    result["fetchedAtMs"] = fetched_at if fallback else 0
+
+  if (fallback or cached.get("tierLabel")) and not force and 0 <= time.time() - fetched_at / 1000 < PROBE_MIN_INTERVAL_SECONDS:
+    result["limits"] = fallback
+    result["fetchedAtMs"] = fetched_at if fallback else 0
     return result
 
   probe = probe_key(access_token)
   if probe["ok"]:
     result["limits"] = probe["limits"]
-    if probe.get("tierLabel"):
-      result["tierLabel"] = probe["tierLabel"]
-    elif fallback_tier:
-      result["tierLabel"] = fallback_tier
+    result["tierLabel"] = probe.get("tierLabel") or result["tierLabel"]
+    result["fetchedAtMs"] = round(time.time() * 1000)
     if probe_cache is not None:
       try:
-        write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000),
-                                 "limits": probe["limits"], "tierLabel": result["tierLabel"]})
+        write_json(probe_cache, {"fetchedAtMs": result["fetchedAtMs"], "limits": probe["limits"], "tierLabel": result["tierLabel"]})
       except Exception as exc:
         print(f"omarchy-agent-usage-muse: could not write limits cache ({exc})", file=sys.stderr)
     return result
@@ -608,32 +620,22 @@ def collect_limits(force: bool) -> dict:
   if probe.get("payg"):
     # Authenticated PAYG: no subscription windows exist. Keep local metering
     # only, silent — not an error, not expired.
+    result["tierLabel"] = "Account"
     return result
   if probe.get("silent"):
     # Active plan with no windows: same silence as PAYG, but keep the plan
-    # name. Stale cached windows are dropped — they belong to a different
-    # plan shape, not this one.
-    if probe.get("tierLabel"):
-      result["tierLabel"] = probe["tierLabel"]
+    # name. Cached windows are dropped — they belong to a different plan
+    # shape, not this one.
+    result["tierLabel"] = probe.get("tierLabel") or result["tierLabel"]
     return result
+  keep_cached()
   if probe.get("expired"):
     result["usageStatusText"] = "Sign-in expired"
     result["authHelpText"] = probe["helpText"]
-    result["limits"] = fallback
-    if fallback_tier:
-      result["tierLabel"] = fallback_tier
-    return result
-  if fallback:
-    result["limits"] = fallback
-    if fallback_tier:
-      result["tierLabel"] = fallback_tier
-    elif probe.get("tierLabel"):
-      result["tierLabel"] = probe["tierLabel"]
-  else:
+  elif not fallback:
     result["usageStatusText"] = "Muse limits unavailable"
     result["authHelpText"] = probe["helpText"]
-    if probe.get("tierLabel"):
-      result["tierLabel"] = probe["tierLabel"]
+    result["tierLabel"] = probe.get("tierLabel") or result["tierLabel"]
   return result
 
 
@@ -780,6 +782,8 @@ def main():
     "modelUsage": stats.get("modelUsage") or {},
     "tierLabel": limits["tierLabel"],
     "limits": limits["limits"],
+    "limitsStale": limits["stale"],
+    "limitsFetchedAt": limits["fetchedAtMs"],
     "usageStatusText": limits["usageStatusText"],
     "authHelpText": limits["authHelpText"],
   }

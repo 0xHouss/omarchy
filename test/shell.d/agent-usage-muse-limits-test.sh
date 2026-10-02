@@ -16,6 +16,12 @@ mkdir -p "$TEST_HOME/.config/muse" "$TEST_HOME/.cache"
 cat >"$TEST_HOME/.config/muse/auth.json" <<'EOF'
 {"schema_version":1,"providers":{"meta":{"access_token":"test-token","api_base_url":"https://api.meta.ai/v1"}}}
 EOF
+touch -d '2026-01-01 00:00:00' "$TEST_HOME/.config/muse/auth.json"
+auth_state() {
+  stat -c '%Y %s' "$TEST_HOME/.config/muse/auth.json"
+  sha256sum <"$TEST_HOME/.config/muse/auth.json"
+}
+auth_before=$(auth_state)
 
 # A stub key service: records the Authorization header it was called with
 # and answers from a canned payload file. The collector must send the OAuth
@@ -81,18 +87,18 @@ set_payload() {
   : >"$STUB_SEEN_FILE"
   # Each stub case starts without a previous probe's cache, so fallback
   # behavior never leaks across cases.
-  rm -f "$TEST_HOME/.cache/omarchy/agent-usage/muse-limits.json"
+  rm -f "$TEST_HOME"/.cache/omarchy/agent-usage/muse-limits-*.json
 }
 
 # Subscriber with usage: window + weekly percents, resets, tier.
-set_payload '{"body":{"subs_tier_name":"Power Usage","subs_usage":{"window":{"used_percent":8,"window_duration_mins":300,"resets_at":1788900190},"weekly":{"used_percent":15,"resets_at":1789344000}}}}'
+set_payload '{"body":{"subs_tier_name":"Power Usage","subs_usage":{"window":{"used_percent":8,"window_duration_mins":300,"resets_at":4102444800},"weekly":{"used_percent":15,"resets_at":4103049600}}}}'
 result=$(run_collector --force)
 
 [[ $(jq -c '[.limits[]|{label,percent}]' <<<"$result") == '[{"label":"Session (5-hour)","percent":0.08},{"label":"Weekly (7-day)","percent":0.15}]' ]] ||
   fail "Muse collector reports window and weekly limits from the key endpoint" "$result"
 pass "Muse collector reports window and weekly limits from the key endpoint"
 
-[[ $(jq -r '.limits[0].resetsAt' <<<"$result") == "2026-09-08T20:43:10+00:00" ]] ||
+[[ $(jq -r '.limits[0].resetsAt' <<<"$result") == "2100-01-01T00:00:00+00:00" ]] ||
   fail "Muse collector converts window reset times to ISO" "$result"
 pass "Muse collector converts window reset times to ISO"
 
@@ -120,6 +126,29 @@ pass "Muse collector reuses a recent probe result"
 [[ $(jq -r '.tierLabel' <<<"$second") == "Power Usage" ]] ||
   fail "Muse collector reuses the cached tier" "$second"
 pass "Muse collector reuses the cached tier"
+
+[[ $(jq -c '{stale: .limitsStale, stamped: (.limitsFetchedAt > 0)}' <<<"$result") == '{"stale":false,"stamped":true}' ]] ||
+  fail "Muse collector stamps fresh limits" "$result"
+pass "Muse collector stamps fresh limits"
+
+# A failed check keeps the last good windows, marked stale with when they
+# were measured; a rejected sign-in does too, and says so.
+printf '{"status":500}' >"$STUB_PAYLOAD_FILE"
+down=$(run_collector --force)
+[[ $(jq -c --argjson fresh "$result" '{same: (.limits == $fresh.limits), stale: .limitsStale, stamp: (.limitsFetchedAt == $fresh.limitsFetchedAt), tier: .tierLabel, status: .usageStatusText}' <<<"$down") == '{"same":true,"stale":true,"stamp":true,"tier":"Power Usage","status":""}' ]] ||
+  fail "Muse collector keeps the last good limits, stale, after a failed check" "$down"
+pass "Muse collector keeps the last good limits, stale, after a failed check"
+
+printf '{"status":401}' >"$STUB_PAYLOAD_FILE"
+refused=$(run_collector --force)
+[[ $(jq -c '{kept: (.limits | length), stale: .limitsStale, status: .usageStatusText}' <<<"$refused") == '{"kept":2,"stale":true,"status":"Sign-in expired"}' ]] ||
+  fail "Muse collector keeps the last limits through a rejected sign-in" "$refused"
+pass "Muse collector keeps the last limits through a rejected sign-in"
+
+# The login file belongs to the Muse CLI: every run so far only read it.
+[[ $(auth_state) == "$auth_before" && $(ls -A "$TEST_HOME/.config/muse") == "auth.json" ]] ||
+  fail "Muse collector never writes the login file" "$(ls -lA --time-style=+%s "$TEST_HOME/.config/muse")"
+pass "Muse collector never writes the login file"
 
 # Pay-as-you-go: key mints fine but there is no subscription window to
 # meter. Silent local metering — not an error, not expired.

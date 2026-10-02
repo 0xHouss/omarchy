@@ -41,8 +41,9 @@ cat >"$MUSE_DATA_DIR/sessions/sess-B/session.jsonl" <<EOF
 {"recorded_at": $old_us, "payload": {"kind": "run", "event": {"kind": "model_completed", "model": "muse-spark-1.2-contributor", "usage": {"input_tokens": 2000, "output_tokens": 200, "reasoning_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}}}}
 EOF
 
-# opencode database: one meta row, one opencode-proxied muse-spark row, and
-# one unrelated provider row that must be ignored.
+# opencode database: one meta row, and rows that must be ignored: Muse Spark
+# through the Zen gateway (the opencode record counts it) and an unrelated
+# provider.
 mkdir -p "$XDG_DATA_HOME/opencode"
 db_path="$XDG_DATA_HOME/opencode/opencode.db"
 sqlite3 "$db_path" <<EOF
@@ -72,22 +73,22 @@ pass "Muse collector identifies as 'muse' with metering-only record"
 # Native input_tokens include cached tokens, so uncached input is split out:
 # sess-A main (1000-600) + 100 out + 600 cached = 1100; subagent
 # (500-100) + 50 + 100 = 550. opencode input is already cache-exclusive:
-# meta 300 + 70 + 90 + 7 = 467; free 100 + 20 + 30 = 150.
-# Today: 1100 + 550 + 467 + 150 = 2267.
-[[ $(jq -r '.todayTotalTokens' <<<"$result") == "2267" ]] ||
+# meta 300 + 70 + 90 + 7 = 467. The Zen-proxied row stays out.
+# Today: 1100 + 550 + 467 = 2117.
+[[ $(jq -r '.todayTotalTokens' <<<"$result") == "2117" ]] ||
   fail "Muse collector sums today's tokens across sources" "$result"
-[[ $(jq -r '.todayPrompts' <<<"$result") == "4" ]] ||
+[[ $(jq -r '.todayPrompts' <<<"$result") == "3" ]] ||
   fail "Muse collector counts today's prompts" "$result"
 pass "Muse collector sums today's tokens across sources"
 
 # Test 3: Subagent sessions roll up into the parent session
-# sess-A main + subagent = 1 session; plus 2 opencode sessions = 3 today,
-# 4 all-time with sess-B.
-[[ $(jq -r '.todaySessions' <<<"$result") == "3" ]] ||
+# sess-A main + subagent = 1 session; plus 1 opencode session = 2 today,
+# 3 all-time with sess-B.
+[[ $(jq -r '.todaySessions' <<<"$result") == "2" ]] ||
   fail "Muse collector rolls subagents into the parent session" "$result"
-[[ $(jq -r '.totalSessions' <<<"$result") == "4" ]] ||
+[[ $(jq -r '.totalSessions' <<<"$result") == "3" ]] ||
   fail "Muse collector counts all-time sessions" "$result"
-[[ $(jq -r '.totalPrompts' <<<"$result") == "5" ]] ||
+[[ $(jq -r '.totalPrompts' <<<"$result") == "4" ]] ||
   fail "Muse collector counts all-time prompts" "$result"
 pass "Muse collector rolls subagents into the parent session"
 
@@ -120,6 +121,9 @@ result_empty=$(HOME="$TEST_HOME/empty-home" MUSE_DATA_DIR="$TEST_HOME/empty-muse
   fail "Muse collector returns empty stats without sources" "$result_empty"
 [[ $(jq -r '.ready' <<<"$result_empty") == "false" ]] ||
   fail "Muse collector reports not ready without sources" "$result_empty"
+# Nobody signed in to Muse: no plan either, so the panel skips the record.
+[[ $(jq -c '[.tierLabel, .limits, .limitsStale]' <<<"$result_empty") == '["",[],false]' ]] ||
+  fail "Muse collector names no plan without a sign-in" "$result_empty"
 # Local metering needs no credentials, so there is never an auth state to
 # report — even on a machine with no usage at all.
 [[ $(jq -r '.usageStatusText' <<<"$result_empty") == "" ]] ||
@@ -145,7 +149,7 @@ ln -s "$MUSE_DATA_DIR/sessions/sess-A/session.jsonl" "$MUSE_DATA_DIR/sessions/se
 ln -s "$MUSE_DATA_DIR/sessions/nope/session.jsonl" "$MUSE_DATA_DIR/sessions/sess-dangling/session.jsonl"
 ln -s "$TEST_HOME/outside/evil" "$MUSE_DATA_DIR/sessions/sess-evildir"
 result_link=$("$ROOT/bin/omarchy-agent-usage-muse" --force)
-[[ $(jq -r '.todayTotalTokens' <<<"$result_link") == "2267" ]] ||
+[[ $(jq -r '.todayTotalTokens' <<<"$result_link") == "2117" ]] ||
   fail "Muse collector skips symlinked session files" "$result_link"
 [[ $(jq -r '.modelUsage | has("evil-model")' <<<"$result_link") == "false" ]] ||
   fail "Muse collector rejects sessions outside the tree" "$result_link"
@@ -164,14 +168,14 @@ cat >"$MUSE_DATA_DIR/sessions/sess-huge-metadata/session.jsonl" <<EOF
 {"recorded_at": $now_us, "payload": {"kind": "run", "event": {"kind": "model_completed", "usage": {"input_tokens": 100, "output_tokens": 10, "reasoning_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}}}}
 EOF
 result_huge=$("$ROOT/bin/omarchy-agent-usage-muse" --force)
-[[ $(jq -r '.todayTotalTokens' <<<"$result_huge") == "2267" ]] ||
+[[ $(jq -r '.todayTotalTokens' <<<"$result_huge") == "2117" ]] ||
   fail "Muse collector skips oversized model names" "$result_huge"
-[[ $(jq -r '.modelUsage | length' <<<"$result_huge") == "3" ]] ||
+[[ $(jq -r '.modelUsage | length' <<<"$result_huge") == "2" ]] ||
   fail "Muse collector keeps oversized models out of the breakdown" "$result_huge"
 pass "Muse collector skips oversized model names"
 
 # Test 10: Many distinct models stay exact in totals
-# 70 distinct models plus the 3 baseline ones: every bucket is kept and the
+# 70 distinct models plus the 2 baseline ones: every bucket is kept and the
 # totals reconcile exactly.
 NOW_US="$now_us" "$PYTHON" - <<'PY'
 import json
@@ -194,13 +198,13 @@ with (root / "session.jsonl").open("w", encoding="utf-8") as handle:
         }) + "\n")
 PY
 result_cap=$("$ROOT/bin/omarchy-agent-usage-muse" --force)
-[[ $(jq -r '.todayTotalTokens' <<<"$result_cap") == "2967" ]] ||
+[[ $(jq -r '.todayTotalTokens' <<<"$result_cap") == "2817" ]] ||
   fail "Muse collector keeps exact totals with many models" "$result_cap"
-[[ $(jq -r '.modelUsage | length' <<<"$result_cap") == "73" ]] ||
+[[ $(jq -r '.modelUsage | length' <<<"$result_cap") == "72" ]] ||
   fail "Muse collector keeps every model in the breakdown" "$result_cap"
 # Scan order varies, so reconcile instead of naming names: every bucket must
-# sum to the all-time total (today 2967 + sess-B 2200).
-[[ $(jq -r '[.modelUsage[] | .inputTokens + .outputTokens + .cacheReadInputTokens + .cacheCreationInputTokens] | add' <<<"$result_cap") == "5167" ]] ||
+# sum to the all-time total (today 2817 + sess-B 2200).
+[[ $(jq -r '[.modelUsage[] | .inputTokens + .outputTokens + .cacheReadInputTokens + .cacheCreationInputTokens] | add' <<<"$result_cap") == "5017" ]] ||
   fail "Muse collector accounts every token with many models" "$result_cap"
 pass "Muse collector keeps exact totals with many models"
 
