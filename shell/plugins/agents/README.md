@@ -143,46 +143,36 @@ Without a Go plan the panel still shows local token usage.
 
 ### Copilot allowance
 
-Copilot reads the CLI's session store under `~/.copilot`, honoring
-`COPILOT_HOME`.
-
 GitHub exposes no supported personal-account usage API — its Copilot REST
-endpoints are organization- or enterprise-scoped — so the collector reads what
-the Copilot CLI keeps locally. Its session store (`~/.copilot/session-store.db`)
-records every billed request in an `assistant_usage_events` table: day, model,
-session, the token split, and the cost in nano AI units (1e9 nano units = 1
-AI credit ≈ $0.01). The panel's token sections come from that table; CLI
-versions whose store predates it are served by the session transcripts under
-`~/.copilot/session-state` instead, whose `session.shutdown` events carry the
-same per-model token split and cost. Neither source is network-dependent.
+endpoints are organization- or enterprise-scoped — so the token sections come
+from what the Copilot CLI keeps under `~/.copilot` (or `COPILOT_HOME`). Its
+session store (`session-store.db`) records every billed request in an
+`assistant_usage_events` table: day, model, session, the token split, and the
+cost in nano AI units (1e9 nano units = 1 AI credit ≈ $0.01). CLI versions
+whose store predates it are served by the session transcripts under
+`session-state` instead, whose `session.shutdown` events carry the same
+per-model token split and cost.
 
-The monthly meter is an allowance of AI credits. The account-wide figure
-comes from GitHub's internal quota endpoint (the same one the editor plugins
-ask), which counts every machine, IDE, and agent on the entitlement — not just
-this machine's CLI. It needs a token from `COPILOT_QUOTA_TOKEN`, `GH_TOKEN`,
-`GITHUB_TOKEN`, or `gh auth token`; every failure is soft and falls back to
-the local estimate. The included allowance is not discoverable locally, so it
-is configured in `~/.config/omarchy/agents/copilot.json`:
+The monthly meter is the account-wide allowance of AI credits from GitHub's
+internal quota endpoint (the same one the editor plugins ask), which counts
+every machine, IDE, and agent on the entitlement and names the plan and the
+reset date. It needs a token from `COPILOT_QUOTA_TOKEN`, `GH_TOKEN`,
+`GITHUB_TOKEN`, or `gh auth token`, and only runs where the Copilot CLI has
+been used, so a machine with `gh` signed in but no Copilot stays out of the
+panel. A failed check keeps the last answer, dimmed. When the endpoint can't
+be asked at all, a budget in `~/.config/omarchy/agents/copilot.json` gives a
+meter labeled "(est.)" from this machine's CLI spend alone:
 
 ```json
 {
-  "plan": "pro",
   "monthlyCredits": 1500,
   "remote": true
 }
 ```
 
-`plan` is one of `free`, `student`, `pro`, `pro+`, `max`, `business`,
-`enterprise` and picks the default allowance (Pro 1500, Pro+ 7000, Max 20000,
-Business 1900, Enterprise 3900 credits per month; existing seat-based
-customers may see promotional amounts through September 2026).
-`monthlyCredits` overrides the plan table, for AI-credit plans without a
-published number or for a personal budget. With neither set there is no local
-estimate and no plan label, because the plan cannot be read from disk. `remote`
-(default true) turns the account-wide quota probe on or off. The allowance
-window resets on the 1st of each month at 00:00 UTC, GitHub's own boundary. A
-limit labeled "(est.)" is the local estimate — this machine's CLI spend only; a
-plain "Monthly allowance" is the live account figure.
+`remote` set to `false` turns the quota probe off, and `true` runs it even
+without a Copilot CLI home. The estimated window resets on the 1st of each
+month at 00:00 UTC, GitHub's own boundary.
 
 ### Fireworks balance
 

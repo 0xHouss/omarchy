@@ -15,32 +15,21 @@ whose store predates that table, is the session transcript directory
 same per-model token split and cost. The record prefers whichever source
 produced numbers, never both.
 
-The monthly meter is an allowance of AI credits. GitHub's own account-wide
-figure is authoritative when the internal quota endpoint answers (the same one
-the editor plugins use); otherwise the collector falls back to this machine's
-CLI cost against a plan allowance from configuration, because the included
-amount is not discoverable locally. All remote reads fail soft — an offline
-machine or a missing token degrades to the local estimate instead of erroring.
-
-Configuration lives in ~/.config/omarchy/agents/copilot.json:
+The monthly meter is an allowance of AI credits: GitHub's own account-wide
+figure from the internal quota endpoint (the same one the editor plugins
+use), asked with a token from COPILOT_QUOTA_TOKEN, GH_TOKEN, GITHUB_TOKEN, or
+`gh auth token`. It names the plan, the allowance, and when it resets, and a
+failed check keeps the last answer, marked stale. Only when it can't be asked
+at all does a monthlyCredits budget from ~/.config/omarchy/agents/copilot.json
+give a local estimate, labeled as one, of this machine's CLI spend:
 
   {
-      "plan": "pro",
-      "monthlyCredits": 1500,
-      "remote": true
+    "monthlyCredits": 1500,
+    "remote": true
   }
 
-plan is one of free, student, pro, pro+, max, business, enterprise and picks
-the default allowance (Pro 1500, Pro+ 7000, Max 20000, Business 1900,
-Enterprise 3900 credits per month; existing seat-based customers may see
-higher promotional amounts through September 2026). monthlyCredits overrides
-the plan table, for AI-credit plans without a published number or for a
-personal budget. The plan is not discoverable locally, so without plan or
-monthlyCredits there is no local estimate and no plan label. remote (default
-true) turns the account-wide quota probe on or off; the probe needs a token
-from COPILOT_QUOTA_TOKEN, GH_TOKEN, GITHUB_TOKEN, or `gh auth token`. The
-allowance window resets on the 1st of each month at 00:00 UTC, GitHub's own
-boundary.
+remote turns the quota probe off when false, and on even without a Copilot
+CLI home when true; by default it runs only where the CLI has been used.
 
 The agents panel only ever reads the JSON this prints.
 """
@@ -75,38 +64,14 @@ ULTRA_SECONDS = 1_000_000_000
 QUOTA_URL = "https://api.github.com/copilot_internal/user"
 REMOTE_TIMEOUT = 6.0
 
-# Plan identifiers as the quota endpoint spells them.
-API_PLAN_KEYS = {
-  "individual": "pro",
-  "individual_pro": "pro+",
-  "business": "business",
-  "enterprise": "enterprise",
-  "free": "free",
-  "max": "max",
-}
-
-# Monthly AI credit allowances from GitHub's usage-based billing tables.
-# Seat-based plans pool credits at the billing entity, so an individual's
-# practical ceiling is set by their admin rather than this figure —
-# monthlyCredits in the config overrides it.
-PLAN_ALLOWANCES = {
-  "free": 0,
-  "student": 0,
-  "pro": 1_500,
-  "pro+": 7_000,
-  "max": 20_000,
-  "business": 1_900,
-  "enterprise": 3_900,
-}
-
-PLAN_LABELS = {
-  "free": "Free",
-  "student": "Student",
-  "pro": "Pro",
-  "pro+": "Pro+",
-  "max": "Max",
+# Plan names as the quota endpoint spells them.
+API_PLAN_LABELS = {
+  "individual": "Pro",
+  "individual_pro": "Pro+",
   "business": "Business",
   "enterprise": "Enterprise",
+  "free": "Free",
+  "max": "Max",
 }
 
 # The session store is mutable and grows without bound, so it is size-capped
@@ -771,24 +736,8 @@ def github_token() -> str:
   return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def api_plan(raw: Any) -> tuple[str, str]:
-  key = API_PLAN_KEYS.get(str(raw or "").strip().lower(), "")
-  if not key:
-    return "", ""
-  return key, PLAN_LABELS.get(key, "Copilot")
-
-
-def fetch_remote_quota() -> dict[str, Any]:
-  """Ask GitHub for the account-wide credit balance.
-
-  Every failure is soft: a missing token, an offline machine, or a changed
-  payload leaves the record on its local estimate rather than failing the
-  whole collection.
-  """
-  token = github_token()
-  if not token:
-    return {"available": False, "reason": "no-token"}
-
+def ask_quota(token: str) -> dict[str, Any]:
+  """Ask GitHub for the account-wide credit balance."""
   request = urllib.request.Request(
     QUOTA_URL,
     headers={
@@ -799,9 +748,7 @@ def fetch_remote_quota() -> dict[str, Any]:
   )
   try:
     with urllib.request.urlopen(request, timeout=REMOTE_TIMEOUT) as response:
-      payload = json.loads(
-        response.read(2_000_000).decode("utf-8", errors="replace")
-      )
+      payload = json.loads(response.read(2_000_000).decode("utf-8", errors="replace"))
   except urllib.error.HTTPError as exc:
     return {"available": False, "reason": f"http-{exc.code}"}
   except (urllib.error.URLError, OSError, ValueError, TimeoutError):
@@ -811,14 +758,10 @@ def fetch_remote_quota() -> dict[str, Any]:
     return {"available": False, "reason": "bad-payload"}
 
   snapshots = payload.get("quota_snapshots")
-  snapshot = (
-    snapshots.get("premium_interactions") if isinstance(snapshots, dict) else None
-  )
+  snapshot = snapshots.get("premium_interactions") if isinstance(snapshots, dict) else None
   if not isinstance(snapshot, dict):
     return {"available": False, "reason": "no-quota"}
 
-  plan_key, plan_label = api_plan(payload.get("copilot_plan"))
-  orgs = payload.get("organization_login_list")
   # Under token-based billing the snapshot counts AI credits directly; only
   # the local store and transcripts count in nano units.
   return {
@@ -827,34 +770,41 @@ def fetch_remote_quota() -> dict[str, Any]:
     "entitlement": positive_float(snapshot.get("entitlement")),
     "used": positive_float(snapshot.get("credits_used")),
     "resetsAt": str(payload.get("quota_reset_date_utc") or ""),
-    "plan": plan_key,
-    "planLabel": plan_label,
-    "org": str(orgs[0]) if isinstance(orgs, list) and orgs else "",
-    "login": clean_name(payload.get("login")),
+    "planLabel": API_PLAN_LABELS.get(str(payload.get("copilot_plan") or "").strip().lower(), ""),
   }
 
 
-# ---------------------------------------------------------------- allowance
+def fetch_remote_quota() -> dict[str, Any]:
+  """The live quota, or the last good one marked stale.
 
-
-def resolve_plan(config: dict[str, Any]) -> tuple[str, float]:
-  """Return the configured plan key and its monthly allowance in credits.
-
-  The plan is not discoverable locally, so a missing or unrecognized plan
-  stays unknown (key "") instead of defaulting to a tier the user may not
-  have; only monthlyCredits can then give the estimate an allowance.
+  Every failure is soft: a missing token, an offline machine, or a changed
+  payload keeps the last answer this token got, dimmed, or leaves the record
+  on its local stats rather than failing the whole collection. The cache is
+  keyed by the token, so a machine signed in to another account never shows
+  the last one's allowance.
   """
-  raw = str(config.get("plan") or "").strip().lower()
-  key = raw.replace(" ", "").replace("copilot", "")
-  if key in ("proplus", "pro-plus"):
-    key = "pro+"
-  if key not in PLAN_LABELS:
-    key = ""
+  token = github_token()
+  if not token:
+    return {"available": False, "reason": "no-token"}
 
-  override = config.get("monthlyCredits")
-  if isinstance(override, (int, float)) and override > 0:
-    return key, float(override)
-  return key, float(PLAN_ALLOWANCES.get(key, 0))
+  cache = cache_root() / f"copilot-quota-{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}.json"
+  quota = ask_quota(token)
+  if quota.get("available"):
+    quota.update(stale=False, fetchedAtMs=round(time.time() * 1000))
+    try:
+      write_json(cache, quota)
+    except OSError:
+      pass
+    return quota
+
+  cached = read_fresh_json(cache, float("inf")) or {}
+  if cached.get("available"):
+    cached.update(stale=True, failure=quota.get("reason", ""))
+    return cached
+  return quota
+
+
+# ---------------------------------------------------------------- allowance
 
 
 def allowance_limits(
@@ -864,62 +814,53 @@ def allowance_limits(
   now: dt.datetime,
   has_stats: bool,
 ) -> dict[str, Any]:
-  plan_key, plan_allowance = resolve_plan(config)
-  plan_label = PLAN_LABELS.get(plan_key, "")
-  estimated = True
-  allow = plan_allowance
-  used = month_credits
+  """The monthly allowance meter.
+
+  The live figure from the quota endpoint counts every machine, editor, and
+  agent on the entitlement, plan included. When it can't be asked, a
+  monthlyCredits budget from the configuration gives a local estimate of this
+  machine's CLI spend, labeled as such; without one there is no meter.
+  """
+  result = {
+    "limits": [],
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": AUTH_HELP,
+    "limitsStale": False,
+    "limitsFetchedAt": 0,
+  }
   resets_at = next_month_start(now).isoformat()
-  reason = ""
 
   live = remote if isinstance(remote, dict) and remote.get("available") else None
-  if live and not live.get("unlimited") and float(live.get("entitlement") or 0) > 0:
-    allow = float(live["entitlement"])
-    used = float(live.get("used") or 0.0)
-    estimated = False
-    if live.get("plan"):
-      plan_key = str(live["plan"])
-      plan_label = str(live["planLabel"] or PLAN_LABELS.get(plan_key, "Copilot"))
-    raw_reset = str(live.get("resetsAt") or "")
-    if raw_reset:
-      parsed = parse_event_time(raw_reset)
-      if parsed is not None and parsed > now:
-        resets_at = parsed.isoformat()
-  elif (
-    remote is not None
-    and remote.get("available") is False
-    and remote.get("reason") != "no-token"
-  ):
-    reason = "Copilot limits unavailable"
+  if live:
+    result["tierLabel"] = str(live.get("planLabel") or "")
+    if live.get("unlimited") or float(live.get("entitlement") or 0) <= 0:
+      return result
+    parsed = parse_event_time(str(live.get("resetsAt") or ""))
+    if parsed is not None and parsed > now:
+      resets_at = parsed.isoformat()
+    result["limits"] = [{
+      "label": "Monthly allowance",
+      "percent": min(1.0, float(live.get("used") or 0.0) / float(live["entitlement"])),
+      "resetsAt": resets_at,
+    }]
+    result["limitsStale"] = bool(live.get("stale"))
+    result["limitsFetchedAt"] = number(live.get("fetchedAtMs"))
+    return result
 
-  limits = []
-  if allow > 0:
-    # A plan-default allowance must not advertise a meter on a machine the
-    # CLI has never touched — the local estimate needs local numbers to
-    # mean anything. The live account figure stands on its own.
-    if estimated and not has_stats:
-      pass
-    else:
-      percent = min(1.0, used / allow)
-      limits.append(
-        {
-          "label": "Monthly allowance (est.)"
-          if estimated
-          else "Monthly allowance",
-          "title": "Monthly allowance (est.)"
-          if estimated
-          else "Monthly allowance",
-          "percent": percent,
-          "resetsAt": resets_at,
-        }
-      )
+  if remote is not None and remote.get("reason") not in ("no-token", "disabled"):
+    result["usageStatusText"] = "Copilot limits unavailable"
 
-  return {
-    "limits": limits,
-    "tierLabel": plan_label,
-    "usageStatusText": reason,
-    "authHelpText": AUTH_HELP,
-  }
+  # A budget must not advertise a meter on a machine the CLI has never
+  # touched: the estimate needs local numbers to mean anything.
+  budget = config.get("monthlyCredits")
+  if isinstance(budget, (int, float)) and budget > 0 and has_stats:
+    result["limits"] = [{
+      "label": "Monthly allowance (est.)",
+      "percent": min(1.0, month_credits / float(budget)),
+      "resetsAt": resets_at,
+    }]
+  return result
 
 
 # ------------------------------------------------------------------ record
@@ -934,33 +875,25 @@ def main() -> int:
   # collector runs.
   parser.add_argument("--force", action="store_true")
   parser.add_argument("--limits-only", action="store_true")
-  parser.add_argument(
-    "--copilot-home", default=os.environ.get("COPILOT_HOME") or "~/.copilot"
-  )
+  parser.add_argument("--copilot-home", default=os.environ.get("COPILOT_HOME") or "~/.copilot")
   args = parser.parse_args()
 
   home_dir = expand_path(args.copilot_home)
-  max_age = (
-    0
-    if args.force
-    else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
-  )
+  max_age = 0 if args.force else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
   stats = cached_scan(home_dir, max_age)
 
   config = read_config()
   now = dt.datetime.now(dt.timezone.utc)
 
+  # The quota probe hands a GitHub token to GitHub, so it only runs where the
+  # Copilot CLI has been used, or where the configuration asks for it. A
+  # machine with gh signed in but no Copilot stays an empty record.
   remote = {"available": False, "reason": "disabled"}
-  if config.get("remote", True) is not False:
+  if config.get("remote") is True or (config.get("remote", True) is not False and home_dir.is_dir()):
     remote = fetch_remote_quota()
 
-  has_stats = (
-    number(stats.get("totalPrompts")) > 0
-    or float(stats.get("monthCredits") or 0.0) > 0
-  )
-  allowance = allowance_limits(
-    float(stats.get("monthCredits") or 0.0), config, remote, now, has_stats
-  )
+  has_stats = number(stats.get("totalPrompts")) > 0 or float(stats.get("monthCredits") or 0.0) > 0
+  allowance = allowance_limits(float(stats.get("monthCredits") or 0.0), config, remote, now, has_stats)
 
   record: dict[str, Any] = {
     "schemaVersion": 1,
@@ -973,6 +906,8 @@ def main() -> int:
     "usageStatusText": allowance["usageStatusText"],
     "authHelpText": allowance["authHelpText"],
     "limits": allowance["limits"],
+    "limitsStale": allowance["limitsStale"],
+    "limitsFetchedAt": allowance["limitsFetchedAt"],
   }
   for key in (
     "todayPrompts",
@@ -993,4 +928,3 @@ def main() -> int:
 
 if __name__ == "__main__":
   raise SystemExit(main())
-

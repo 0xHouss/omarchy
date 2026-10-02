@@ -18,7 +18,7 @@ trap 'rm -rf "$TEST_HOME" "$EMPTY_HOME" "$TRANSCRIPT_HOME" "$MIDNIGHT_HOME" "$HI
 
 for home in "$TEST_HOME" "$EMPTY_HOME" "$TRANSCRIPT_HOME" "$MIDNIGHT_HOME" "$HISTORY_HOME"; do
   mkdir -p "$home/.copilot/session-state" "$home/.config/omarchy/agents" "$home/.cache"
-  printf '{"plan": "pro", "remote": false}' >"$home/.config/omarchy/agents/copilot.json"
+  printf '{"monthlyCredits": 1500, "remote": false}' >"$home/.config/omarchy/agents/copilot.json"
 done
 rm -rf "$EMPTY_HOME/.copilot"
 
@@ -99,10 +99,6 @@ pass "Copilot collector splits cached tokens off the prompt"
   fail "Copilot collector reports today's day row" "$result"
 pass "Copilot collector reports today's day row"
 
-[[ $(jq -r '.tierLabel' <<<"$result") == "Pro" ]] ||
-  fail "Copilot collector exposes the configured plan label" "$result"
-pass "Copilot collector exposes the configured plan label"
-
 [[ $(jq -r '.limits[0].label' <<<"$result") == "Monthly allowance (est.)" ]] ||
   fail "Copilot collector labels the local estimate" "$result"
 pass "Copilot collector labels the local estimate"
@@ -115,33 +111,35 @@ pass "Copilot collector divides month credits by allowance"
   fail "Copilot collector sets an allowance reset time" "$result"
 pass "Copilot collector sets an allowance reset time"
 
-# The plan cannot be read from disk, so an unconfigured one is not presented as
-# a tier: no label and no estimated meter, while the local stats still show.
+# Without the live quota or a budget there is no plan and no meter, while the
+# local stats still show.
 printf '{"remote": false}' >"$TEST_HOME/.config/omarchy/agents/copilot.json"
 result=$(run_collector_in "$TEST_HOME")
 
 [[ $(jq -r '.ready' <<<"$result") == "true" && $(jq -r '.tierLabel' <<<"$result") == "" && $(jq -c '.limits' <<<"$result") == "[]" ]] ||
-  fail "Copilot collector leaves an unconfigured plan unknown" "$result"
-pass "Copilot collector leaves an unconfigured plan unknown"
+  fail "Copilot collector shows no meter without the quota or a budget" "$result"
+pass "Copilot collector shows no meter without the quota or a budget"
 
 printf '{"monthlyCredits": 3000, "remote": false}' >"$TEST_HOME/.config/omarchy/agents/copilot.json"
 result=$(run_collector_in "$TEST_HOME")
 
 [[ $(jq -r '.tierLabel' <<<"$result") == "" && $(jq -r '.limits[0].percent' <<<"$result") == "0.0005" ]] ||
-  fail "Copilot collector estimates from monthlyCredits without a plan" "$result"
-pass "Copilot collector estimates from monthlyCredits without a plan"
+  fail "Copilot collector estimates from a monthlyCredits budget" "$result"
+pass "Copilot collector estimates from a monthlyCredits budget"
 
 # The live quota answers in AI credits, account-wide; it wins over the local
-# estimate and supplies the plan and reset date.
-printf '{"plan": "pro", "remote": true}' >"$TEST_HOME/.config/omarchy/agents/copilot.json"
+# estimate and supplies the plan and reset date. A failed check after it
+# keeps that answer, marked stale.
+printf '{"monthlyCredits": 3000}' >"$TEST_HOME/.config/omarchy/agents/copilot.json"
 result=$(HOME="$TEST_HOME" COPILOT_HOME="$TEST_HOME/.copilot" XDG_CONFIG_HOME="$TEST_HOME/.config" \
-  XDG_CACHE_HOME="$TEST_HOME/.cache" COPILOT_QUOTA_TOKEN="test-token" \
+  XDG_CACHE_HOME="$TEST_HOME/.cache" COPILOT_QUOTA_TOKEN="test-token" EMPTY_HOME="$EMPTY_HOME" \
   python3 - "$ROOT/bin/omarchy-agent-usage-copilot" <<'PY'
 import datetime as dt
 import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import sys
 
 loader = importlib.machinery.SourceFileLoader("collector", sys.argv[1])
@@ -163,16 +161,45 @@ payload = {
     }
   },
 }
-collector.urllib.request.urlopen = lambda request, timeout=None: io.BytesIO(json.dumps(payload).encode())
+def run(*extra):
+  out = io.StringIO()
+  sys.argv = ["omarchy-agent-usage-copilot", "--force", *extra]
+  sys.stdout, real_stdout = out, sys.stdout
+  collector.main()
+  sys.stdout = real_stdout
+  return json.loads(out.getvalue())
 
-out = io.StringIO()
-sys.argv = ["omarchy-agent-usage-copilot", "--force"]
-sys.stdout, real_stdout = out, sys.stdout
-collector.main()
-sys.stdout = real_stdout
-print(json.dumps({"record": json.loads(out.getvalue()), "reset": reset.isoformat()}))
+
+def offline(request, timeout=None):
+  raise collector.urllib.error.URLError("offline")
+
+
+def unasked(request, timeout=None):
+  raise AssertionError("the quota should not have been asked")
+
+
+collector.urllib.request.urlopen = lambda request, timeout=None: io.BytesIO(json.dumps(payload).encode())
+record = run()
+collector.urllib.request.urlopen = offline
+stale = run()
+# gh signed in on a machine that never ran the Copilot CLI: nothing is asked.
+collector.urllib.request.urlopen = unasked
+clean = run("--copilot-home", os.path.join(os.environ["EMPTY_HOME"], ".copilot"))
+print(json.dumps({"record": record, "stale": stale, "clean": clean, "reset": reset.isoformat()}))
 PY
 )
+
+[[ $(jq -c '{fresh: .record.limitsStale, stamped: (.record.limitsFetchedAt > 0)}' <<<"$result") == '{"fresh":false,"stamped":true}' ]] ||
+  fail "Copilot collector stamps the live allowance" "$result"
+pass "Copilot collector stamps the live allowance"
+
+[[ $(jq -c '{same: (.stale.limits == .record.limits), stale: .stale.limitsStale, stamp: (.stale.limitsFetchedAt == .record.limitsFetchedAt), tier: .stale.tierLabel}' <<<"$result") == '{"same":true,"stale":true,"stamp":true,"tier":"Business"}' ]] ||
+  fail "Copilot collector keeps the last live allowance, stale, after a failed check" "$result"
+pass "Copilot collector keeps the last live allowance, stale, after a failed check"
+
+[[ $(jq -c '.clean | {ready, tierLabel, limits}' <<<"$result") == '{"ready":false,"tierLabel":"","limits":[]}' ]] ||
+  fail "Copilot collector doesn't ask GitHub where the CLI never ran" "$result"
+pass "Copilot collector doesn't ask GitHub where the CLI never ran"
 
 [[ $(jq -r '.record.limits[0].label' <<<"$result") == "Monthly allowance" && $(jq -r '.record.limits[0].percent' <<<"$result") == "0.25" ]] ||
   fail "Copilot collector reads the live allowance in credits" "$result"
