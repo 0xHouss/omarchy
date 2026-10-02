@@ -75,6 +75,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `grok` | The credits endpoint behind Grok's `/usage` view (the billing period's included usage) | Each session's `usage.json` (the ledger `grok usage` prints: tokens by model per finished turn), plus `summary.json` for sessions |
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 | `hermes` | None (Hermes has no subscription of its own) | `state.db` in Hermes' home and in each named profile under `~/.hermes/profiles`, read-only |
+| `antigravity` | Google Cloud Code API (`loadCodeAssist` and `retrieveUserQuotaSummary`) with rolling session/weekly calculation fallback | Transcripts and history logs under `~/.gemini/antigravity-cli/` (`AGY_DIR`) |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -90,7 +91,9 @@ since every account shares the primary home's history. After each run,
 active account crosses its threshold, and re-collects the record if the active
 account changed.
 
-Claude limits need a signed-in CLI; without credentials the panel says so and
+Antigravity checks authentication via the Secret Service keyring
+(`gemini`/`antigravity`), queries Google's Cloud Code endpoints for account
+tier and quota limits, and honors a custom app root via `AGY_DIR`. Claude limits need a signed-in CLI; without credentials the panel says so and
 falls back to local stats only. A non-default Claude directory is honored via
 `CLAUDE_CONFIG_DIR`, Codex via `CODEX_HOME`, Grok via `GROK_HOME`, Hermes via
 `HERMES_HOME`. Grok's
