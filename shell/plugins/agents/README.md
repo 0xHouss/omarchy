@@ -121,9 +121,8 @@ Ollama Cloud reads `OLLAMA_API_KEY` first, then the key pi or omp signed in
 with in `~/.pi/agent/auth.json` or `~/.omp/agent/auth.json`.
 
 Ollama's usage endpoint reports the account's session and weekly usage as
-0..1 fractions but not the reset times; the resets are the same for every
-account (epoch-aligned 5-hour session windows, weekly windows ending Monday
-00:00 UTC), so the collector computes them. The limits cover the whole
+0..1 fractions but not the reset times, so those windows show no reset time
+rather than a guessed one. The limits cover the whole
 account — every model the key can reach — while the local stats count pi and
 omp sessions on the `ollama-cloud` provider. To count only the Claude models
 Ollama Cloud serves, set a model prefix in

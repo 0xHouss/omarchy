@@ -13,7 +13,7 @@ trap 'rm -rf "$TEST_HOME"' EXIT
 no_key=$(HOME="$TEST_HOME" XDG_CONFIG_HOME="$TEST_HOME/.config" XDG_CACHE_HOME="$TEST_HOME/.cache" \
   OLLAMA_API_KEY="" "$ROOT/bin/omarchy-agent-usage-ollama" --force)
 
-[[ $(jq -r '.id + ":" + (.ready | tostring) + ":" + .usageStatusText' <<<"$no_key") == "ollama:false:Waiting for auth" ]] ||
+[[ $(jq -r '.id + ":" + (.ready | tostring) + ":" + .usageStatusText + ":" + .tierLabel + ":" + (.limits | length | tostring) + ":" + (.hasLocalStats | tostring)' <<<"$no_key") == "ollama:false:Waiting for auth::0:false" ]] ||
   fail "Ollama collector prints a valid record without credentials" "$no_key"
 pass "Ollama collector prints a valid record without credentials"
 
@@ -91,26 +91,10 @@ limits=$(read_limits '{
   fail "Ollama collector keeps the endpoint's 0..1 fractions" "$limits"
 pass "Ollama collector reads the session and weekly fractions"
 
-# Reset times are computed, not fetched: session windows are epoch-aligned
-# 5-hour blocks and weekly windows end Monday 00:00 UTC.
-resets=$(python3 - "$ROOT/bin/omarchy-agent-usage-ollama" <<'PY'
-import datetime as dt
-import importlib.machinery, importlib.util, sys
-
-loader = importlib.machinery.SourceFileLoader("collector", sys.argv[1])
-spec = importlib.util.spec_from_loader(loader.name, loader)
-collector = importlib.util.module_from_spec(spec)
-loader.exec_module(collector)
-
-session = dt.datetime.fromisoformat(collector.reset_iso(collector.SESSION_WINDOW_SECONDS))
-weekly = dt.datetime.fromisoformat(collector.reset_iso(collector.WEEKLY_WINDOW_SECONDS, collector.WEEKLY_EPOCH_OFFSET_SECONDS))
-print(f"{session.timestamp() % collector.SESSION_WINDOW_SECONDS == 0}:{weekly.strftime('%A')}:{weekly.hour}:{weekly.minute}")
-PY
-)
-
-[[ "$resets" == "True:Monday:0:0" ]] ||
-  fail "Ollama collector computes epoch-aligned session and Monday-midnight weekly resets" "$resets"
-pass "Ollama collector computes epoch-aligned session and Monday-midnight weekly resets"
+# The endpoint names no reset times, and none are made up.
+[[ $(jq -c '[.limits[].resetsAt]' <<<"$limits") == '["",""]' ]] ||
+  fail "Ollama collector leaves reset times it isn't told empty" "$limits"
+pass "Ollama collector leaves reset times it isn't told empty"
 
 # A payload with no usable windows explains itself instead of printing none.
 empty=$(read_limits '{"limits": {"session": {"usage": "unknown"}, "weekly": null}}')
@@ -181,6 +165,8 @@ unreachable=$(collect_limits false "$stale" transport)
   fail "Ollama collector falls back to cache when the probe cannot connect" "$unreachable"
 [[ $(jq -r '.result.retryAdvised' <<<"$unreachable") == "true" ]] ||
   fail "Ollama collector advises a retry after a transport failure" "$unreachable"
+[[ $(jq -c '{live: .result.live, fetchedAtMs: .result.fetchedAtMs}' <<<"$unreachable") == '{"live":false,"fetchedAtMs":1}' ]] ||
+  fail "Ollama collector marks kept limits stale with when they were fetched" "$unreachable"
 pass "Ollama collector falls back to cache when the probe cannot connect"
 
 # A rejected key says so instead of pretending the endpoint is down.
@@ -203,6 +189,8 @@ forced=$(collect_limits true "$fresh" normal)
   fail "Ollama collector re-probes limits and plan on --force despite a fresh cache" "$forced"
 [[ $(jq -c '[.result.limits[].percent]' <<<"$forced") == "[0.44,0.11]" && $(jq -r '.result.tierLabel' <<<"$forced") == "Pro" ]] ||
   fail "Ollama collector returns the forced probe's numbers and plan" "$forced"
+[[ $(jq -r '.result.live and .result.fetchedAtMs == .cached.fetchedAtMs' <<<"$forced") == "true" ]] ||
+  fail "Ollama collector marks a fresh probe live" "$forced"
 pass "Ollama collector re-probes on --force despite a fresh cache"
 
 # A probe that lands becomes the next run's fallback.

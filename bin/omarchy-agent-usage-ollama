@@ -31,14 +31,8 @@ AGENT_NAME = "Ollama Cloud"
 USAGE_ENDPOINT = "https://ollama.com/api/usage"
 ME_ENDPOINT = "https://ollama.com/api/me"
 PROBE_MIN_INTERVAL_SECONDS = 15
-SESSION_WINDOW_SECONDS = 5 * 3600
-WEEKLY_WINDOW_SECONDS = 7 * 86400
-# Ollama's weekly windows end Monday 00:00 UTC, which is 4 days after the
-# epoch (a Thursday) — hence the offset in the reset computation. Session
-# windows are epoch-aligned 5-hour blocks. The usage endpoint reports the
-# fractions but not the reset times, and the resets are the same for every
-# account, so both are computed rather than fetched.
-WEEKLY_EPOCH_OFFSET_SECONDS = 4 * 86400
+# The usage endpoint reports how much of each window is used but not when it
+# resets, so the limits carry no reset time rather than a guessed one.
 
 
 def config_dir() -> Path:
@@ -286,12 +280,6 @@ def clamp_fraction(value: Any) -> float:
   return min(1.0, n)
 
 
-def reset_iso(window_seconds: int, epoch_offset_seconds: int = 0) -> str:
-  now = time.time()
-  nxt = now - ((now - epoch_offset_seconds) % window_seconds) + window_seconds
-  return dt.datetime.fromtimestamp(nxt, dt.timezone.utc).isoformat()
-
-
 def probe_limits(access_key: str) -> dict[str, Any]:
   request = urllib.request.Request(
     USAGE_ENDPOINT,
@@ -324,11 +312,11 @@ def probe_limits(access_key: str) -> dict[str, Any]:
   if isinstance(session, dict):
     percent = clamp_fraction(session.get("usage"))
     if percent >= 0:
-      out.append({"label": "Session (5-hour)", "percent": percent, "resetsAt": reset_iso(SESSION_WINDOW_SECONDS)})
+      out.append({"label": "Session (5-hour)", "percent": percent, "resetsAt": ""})
   if isinstance(weekly, dict):
     percent = clamp_fraction(weekly.get("usage"))
     if percent >= 0:
-      out.append({"label": "Weekly (7-day)", "percent": percent, "resetsAt": reset_iso(WEEKLY_WINDOW_SECONDS, WEEKLY_EPOCH_OFFSET_SECONDS)})
+      out.append({"label": "Weekly (7-day)", "percent": percent, "resetsAt": ""})
   if not out:
     return {"ok": False, "helpText": "Ollama's usage endpoint returned no limits. Local stats are still shown."}
   return {"ok": True, "limits": out}
@@ -350,7 +338,10 @@ def probe_plan(access_key: str) -> str:
 
 
 def collect_limits(access_key: str, force: bool) -> dict[str, Any]:
-  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": ""}
+  # `live` says whether the limits are this check's (or a probe recent enough
+  # to stand in for one), `fetchedAtMs` when they were measured, so the panel
+  # can dim limits kept from an earlier check.
+  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": "", "live": False, "fetchedAtMs": 0}
 
   # A panel that is opened and shut repeatedly must not turn into a request
   # per flick, so recent probe results are reused for a short window — and
@@ -359,6 +350,7 @@ def collect_limits(access_key: str, force: bool) -> dict[str, Any]:
   cached = read_fresh_json(probe_cache, float("inf")) or {}
   fallback = cached.get("limits") if isinstance(cached.get("limits"), list) else []
   result["tierLabel"] = str(cached.get("plan") or "")
+  result["fetchedAtMs"] = number(cached.get("fetchedAtMs"))
 
   if access_key == "":
     result["limits"] = fallback
@@ -372,6 +364,7 @@ def collect_limits(access_key: str, force: bool) -> dict[str, Any]:
   fetched_at = number(cached.get("fetchedAtMs")) / 1000
   if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
     result["limits"] = fallback
+    result["live"] = True
     return result
 
   probe = probe_limits(access_key)
@@ -379,7 +372,8 @@ def collect_limits(access_key: str, force: bool) -> dict[str, Any]:
     plan = probe_plan(access_key)
     result["limits"] = probe["limits"]
     result["tierLabel"] = plan
-    write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000), "limits": probe["limits"], "plan": plan})
+    result.update(live=True, fetchedAtMs=round(time.time() * 1000))
+    write_json(probe_cache, {"fetchedAtMs": result["fetchedAtMs"], "limits": probe["limits"], "plan": plan})
     return result
 
   # The first probe after login often fires before DHCP has handed out a
@@ -417,11 +411,13 @@ def main() -> int:
     "name": AGENT_NAME,
     "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
     "ready": number((stats or {}).get("totalPrompts")) > 0 or len(limits["limits"]) > 0,
-    "hasLocalStats": True,
+    "hasLocalStats": stats is not None,
     "tierLabel": limits["tierLabel"],
     "usageStatusText": limits["usageStatusText"],
     "authHelpText": limits["authHelpText"],
     "limits": limits["limits"],
+    "limitsStale": not limits["live"],
+    "limitsFetchedAt": limits["fetchedAtMs"],
   }
   if limits.get("retryAdvised"):
     record["retryAdvised"] = True
