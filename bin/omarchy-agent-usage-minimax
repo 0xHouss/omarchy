@@ -252,6 +252,25 @@ def fetch_quota(api_key: str, base_url: str) -> dict[str, Any]:
   return payload
 
 
+# A window kept from an earlier check is dropped once it has reset, since
+# what it said no longer holds; one with no reset time is kept.
+def open_windows(limits: Any) -> list[dict[str, Any]]:
+  now = datetime.now(timezone.utc)
+  kept = []
+  for limit in limits if isinstance(limits, list) else []:
+    if not isinstance(limit, dict):
+      continue
+    try:
+      resets = datetime.fromisoformat(str(limit.get("resetsAt") or "").replace("Z", "+00:00"))
+    except ValueError:
+      resets = None
+    if resets and resets.tzinfo is None:
+      resets = resets.replace(tzinfo=timezone.utc)
+    if not resets or resets > now:
+      kept.append(limit)
+  return kept
+
+
 # Nobody with a MiniMax key here: an empty record, which the panel skips.
 # With one, a failed check keeps the last good limits, marked stale.
 def collect(api_key: str, base_url: str) -> dict[str, Any]:
@@ -264,7 +283,7 @@ def collect(api_key: str, base_url: str) -> dict[str, Any]:
   except MiniMaxError as error:
     cached = read_json(limits_cache()) or {}
     record.update(
-      limits=cached.get("limits") or [],
+      limits=open_windows(cached.get("limits")),
       limitsStale=True,
       limitsFetchedAt=int(cached.get("fetchedAtMs") or 0),
       usageStatusText="MiniMax limits unavailable",

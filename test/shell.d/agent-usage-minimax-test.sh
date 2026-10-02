@@ -82,14 +82,30 @@ opencode_key, opencode_base_url = scanner.credentials()
 class WorkingClient:
   pass
 
-scanner.fetch_quota = lambda api_key, base_url: payload
-record = scanner.collect("mmx_test", "https://example.invalid")
+# Windows still open, so the cached copy outlives the failed check below.
+import copy, time
+current = copy.deepcopy(payload)
+current["model_remains"][0]["end_time"] = round((time.time() + 3600) * 1000)
+current["model_remains"][0]["weekly_end_time"] = round((time.time() + 86400) * 1000)
+scanner.fetch_quota = lambda api_key, base_url: current
+record =scanner.collect("mmx_test", "https://example.invalid")
 
 def unreachable(api_key, base_url):
   raise scanner.MiniMaxError("Could not reach the MiniMax API")
 
 scanner.fetch_quota = unreachable
 stale = scanner.collect("mmx_test", "https://example.invalid")
+
+# A cached window that has since reset is dropped; one still open, or with
+# no reset time, stays.
+from datetime import datetime, timedelta, timezone
+now = datetime.now(timezone.utc)
+scanner.write_json(scanner.limits_cache(), {"fetchedAtMs": 1, "limits": [
+  {"label": "Session (5-hour)", "percent": 1.0, "resetsAt": (now - timedelta(hours=1)).isoformat()},
+  {"label": "Weekly (7-day)", "percent": 0.5, "resetsAt": (now + timedelta(days=2)).isoformat()},
+  {"label": "Other", "percent": 0.2, "resetsAt": ""},
+]})
+reset = scanner.collect("mmx_test", "https://example.invalid")
 
 print(json.dumps({
   "limits": limits,
@@ -100,6 +116,7 @@ print(json.dumps({
   "opencodeKey": opencode_key,
   "record": record,
   "stale": stale,
+  "reset": reset,
 }))
 PY
 )
@@ -129,3 +146,7 @@ pass "MiniMax collector prints the display-ready record contract"
 [[ $(jq -r '.stale.limitsFetchedAt == .record.limitsFetchedAt and .record.limitsFetchedAt > 0' <<<"$result") == "true" ]] ||
   fail "stale MiniMax limits keep when they were fetched" "$result"
 pass "MiniMax collector keeps the last limits, marked stale, after a failed check"
+
+[[ $(jq -c '[.reset.limits[].label]' <<<"$result") == '["Weekly (7-day)","Other"]' ]] ||
+  fail "MiniMax collector drops kept windows that have reset" "$result"
+pass "MiniMax collector drops kept windows that have reset"
