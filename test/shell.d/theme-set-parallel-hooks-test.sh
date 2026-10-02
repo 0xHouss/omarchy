@@ -46,7 +46,7 @@ call_run_parallel \
 [[ -f $test_tmp/first && -f $test_tmp/last ]] ||
   fail "hooks either side of a failing one still run"
 
-grep -q 'exit 3' "$stderr_file" ||
+grep -qx 'omarchy-theme-set: theme hook failed: exit 3' "$stderr_file" ||
   fail "the failing hook is named on stderr" "stderr: $(<"$stderr_file")"
 
 grep -q 'touch' "$stderr_file" &&
@@ -56,7 +56,7 @@ grep -q 'touch' "$stderr_file" &&
 # it has to be reported the same way as a hook that ran and exited nonzero.
 call_run_parallel "omarchy-command-that-does-not-exist"
 
-grep -q 'omarchy-command-that-does-not-exist' "$stderr_file" ||
+grep -qx 'omarchy-theme-set: theme hook failed: omarchy-command-that-does-not-exist' "$stderr_file" ||
   fail "an unresolvable hook is named on stderr" "stderr: $(<"$stderr_file")"
 
 call_run_parallel "true" "true"
