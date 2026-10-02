@@ -76,6 +76,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 | `hermes` | None (Hermes has no subscription of its own) | `state.db` in Hermes' home and in each named profile under `~/.hermes/profiles`, read-only |
 | `agy` | Google's Cloud Code API (`loadCodeAssist` for the plan, `retrieveUserQuotaSummary` for the 5-hour and weekly windows) | `history.jsonl`, `conversation_summaries.db`, and each conversation's `transcript.jsonl` under `~/.gemini/antigravity-cli/` (`AGY_DIR`) |
+| `zai` | Z.ai's coding-plan monitor endpoint (5-hour session + 7-day weekly) | pi/omp sessions on the Z.ai provider (`glm-*` models) |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -106,6 +107,12 @@ again. Fireworks reads
 `~/.fireworks/auth.ini` (which `firectl set-api-key` creates), then the key
 opencode stores in `~/.local/share/opencode/auth.json` when Fireworks is
 signed in there.
+
+Z.ai limits need a key that carries a GLM Coding Plan; a pay-as-you-go key
+reports "no coding plan" and the panel falls back to local stats only. The key
+comes from `~/.config/omarchy/agents/zai.json`, then `ZAI_API_KEY` /
+`ZHIPU_API_KEY` in the environment, then pi/omp's `.env`. Set `platform` to
+`"zhipu"` in the config for the China (`open.bigmodel.cn`) host.
 
 ### Fireworks balance
 
