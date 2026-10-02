@@ -26,7 +26,7 @@ export TZ="UTC"
 
 # 1. Without credentials: valid record, ready=false
 no_key=$("$COLLECTOR")
-[[ $(jq -r '.id + ":" + (.ready | tostring)' <<<"$no_key") == "openrouter:false" ]] ||
+[[ $(jq -r '.id + ":" + (.ready | tostring) + ":" + .tierLabel' <<<"$no_key") == "openrouter:false:" ]] ||
   fail "prints a valid record without credentials" "$no_key"
 pass "prints a valid record without credentials"
 
@@ -94,7 +94,7 @@ check "$(jq -r '.activityModels | join(",")' <<<"$result")" "gpt-4o-mini,y-model
 check "$(jq -r '.activityOldDay | length' <<<"$result")" "2" "activity tracks active dates"
 check "$(jq -r .keyMeterEmpty <<<"$result")" "true" "no meter without key limit"
 check "$(jq -r '.keyMeter[0].percent' <<<"$result")" "0.6" "key meter drains toward empty"
-check "$(jq -r '.keyMeter[0].resetsAt' <<<"$result")" "weekly" "key meter maps limit_reset"
+check "$(jq -r '.keyMeter[0].label + ":" + .keyMeter[0].resetsAt' <<<"$result")" "Weekly key limit:" "key meter names its period, not a reset time"
 
 # 3. Tier-2 path sets scope=account + hasPromptStats=false (stub api_get)
 scope_check=$(python3 - "$COLLECTOR" <<'PY'
@@ -132,5 +132,39 @@ check "$(jq -r .scope <<<"$scope_check")" "account" "tier-2 record is scope=acco
 check "$(jq -r .hasPromptStats <<<"$scope_check")" "false" "tier-2 hides prompt counts"
 check "$(jq -r .balance <<<"$scope_check")" "9.0" "tier-2 keeps balance from /credits"
 check "$(jq -r '.called | join(",")' <<<"$scope_check")" "/activity,/credits,/key" "tier-2 probes activity + key + credits"
+
+# 4. A failed /key lookup keeps the last good meter, marked stale.
+stale_check=$(python3 - "$COLLECTOR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("or_collector3", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+state = {"up": True}
+def fake_api_get(path, key):
+  if not state["up"]:
+    raise mod.OpenRouterTransportError("Could not reach the OpenRouter API")
+  if path == "/key":
+    return {"data": {"limit": 10, "limit_remaining": 4, "limit_reset": "monthly"}}
+  if path == "/credits":
+    return {"data": {"total_credits": 10, "total_usage": 1}}
+  raise AssertionError(path)
+mod.api_get = fake_api_get
+
+class Args: force = True; limits_only = False
+os.environ["OPENROUTER_API_KEY"] = "sk-test"
+os.environ["OPENROUTER_MANAGEMENT_KEY"] = ""
+live = mod.scan(Args())
+state["up"] = False
+stale = mod.scan(Args())
+pick = lambda r: {"stale": r["limitsStale"], "fetchedAt": r["limitsFetchedAt"], "percent": r["limits"][0]["percent"] if r["limits"] else None, "ready": r["ready"], "tier": r["tierLabel"]}
+print(json.dumps({"live": pick(live), "stale": pick(stale), "status": stale["usageStatusText"]}))
+PY
+)
+check "$(jq -c '.live | {stale, percent, tier}' <<<"$stale_check")" '{"stale":false,"percent":0.6,"tier":"Prepaid"}' "a live key meter is fresh"
+check "$(jq -c '.stale | {stale, percent, ready}' <<<"$stale_check")" '{"stale":true,"percent":0.6,"ready":true}' "a failed lookup keeps the last meter, marked stale"
+check "$(jq -r '.stale.fetchedAt == .live.fetchedAt and .live.fetchedAt > 0' <<<"$stale_check")" "true" "stale meter keeps when it was fetched"
+check "$(jq -r .status <<<"$stale_check")" "OpenRouter unavailable" "a failed lookup says so"
 
 pass "ALL OPENROUTER SCANNER TESTS PASSED"

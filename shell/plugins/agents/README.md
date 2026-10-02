@@ -186,7 +186,8 @@ history from the local opencode scan to the account-global `/activity` API.
 The collector reads the prepaid ledger from `GET /api/v1/credits`
 (`remaining = total_credits - total_usage`) and reports it as a live,
 non-estimated balance. A key with a credit limit additionally gets a
-draining key-limit meter from `GET /api/v1/key`.
+draining key-limit meter from `GET /api/v1/key`, labeled with how often the
+limit starts over; a failed lookup keeps the last meter, dimmed as stale.
 
 Token history comes in two tiers, selected automatically by key type:
 
