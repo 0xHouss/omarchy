@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Omarchy",
   "license": "MIT",
-  "description": "Claude Code, Codex, Grok, Fireworks, Hermes, and Antigravity usage, limits, and pace in a native Omarchy bar panel.",
+  "description": "Usage, limits, pace, and prepaid balances for every AI agent and provider in a native Omarchy bar panel.",
   "kinds": ["bar-widget"],
   "activation": "on-demand",
   "entryPoints": {
