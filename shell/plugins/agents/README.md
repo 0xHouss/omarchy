@@ -189,7 +189,8 @@ opencode stores in `~/.local/share/opencode/auth.json` when OpenRouter is
 signed in there, then `apiKey` in `~/.config/omarchy/agents/openrouter.json`.
 A management key in `OPENROUTER_MANAGEMENT_KEY` (or `managementKey` in that
 file, from `openrouter.ai/settings/management-keys`) switches the token
-history from the local opencode scan to the account-global `/activity` API.
+history from the local opencode scan to the account-global `/activity` API;
+on its own it also reads the balance, with no key-limit meter.
 
 The collector reads the prepaid ledger from `GET /api/v1/credits`
 (`remaining = total_credits - total_usage`) and reports it as a live,

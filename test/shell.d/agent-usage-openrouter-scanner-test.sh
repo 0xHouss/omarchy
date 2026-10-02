@@ -206,4 +206,33 @@ PY
 check "$(jq -r '.headers + ":" + .body' <<<"$timeout_check")" "transport:transport" "read timeouts are transport failures"
 check "$(jq -c .record <<<"$timeout_check")" '{"ready":true,"stale":true,"meter":true,"retry":true,"prompts":1}' "a timed-out probe keeps stats and the last meter and asks for a retry"
 
+# 6. A management key alone still collects: the 30-day history and the
+# balance, with no inference key's meter to show.
+manager_check=$(python3 - "$COLLECTOR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("or_collector5", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+calls = []
+def fake_api_get(path, key):
+  calls.append(f"{path}={key}")
+  if path == "/activity":
+    return {"data": [{"date": "2026-09-08", "model": "a/b", "prompt_tokens": 10, "completion_tokens": 5}]}
+  if path == "/credits":
+    return {"data": {"total_credits": 10, "total_usage": 4}}
+  raise AssertionError(path)
+mod.api_get = fake_api_get
+
+class Args: force = True; limits_only = False
+os.environ["OPENROUTER_API_KEY"] = ""
+os.environ["OPENROUTER_MANAGEMENT_KEY"] = "sk-mgmt"
+record = mod.scan(Args())
+print(json.dumps({"ready": record["ready"], "scope": record.get("scope"), "balance": record.get("balance", {}).get("remaining"), "limits": record["limits"], "status": record["usageStatusText"], "calls": sorted(calls)}))
+PY
+)
+check "$(jq -c '{ready, scope, balance, limits, status}' <<<"$manager_check")" '{"ready":true,"scope":"account","balance":6.0,"limits":[],"status":""}' "a management key alone collects history and balance"
+check "$(jq -r '.calls | join(",")' <<<"$manager_check")" "/activity=sk-mgmt,/credits=sk-mgmt" "a management key alone skips the inference key's meter"
+
 pass "ALL OPENROUTER SCANNER TESTS PASSED"

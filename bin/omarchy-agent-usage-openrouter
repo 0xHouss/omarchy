@@ -478,10 +478,32 @@ def limits_cache() -> Path:
   return cache_root() / "openrouter-limits.json"
 
 
+# The key-limit meter as (limits, stale, fetchedAtMs, status, help). A failed
+# lookup keeps the last good meter, marked stale, and leaves the token stats
+# standing.
+def key_meter(key: str) -> tuple[list[dict], bool, int, str, str]:
+  try:
+    key_info = api_get("/key", key).get("data", {})
+  except OpenRouterError as error:
+    cached = read_fresh_json(limits_cache(), float("inf")) or {}
+    limits = cached.get("limits") if isinstance(cached.get("limits"), list) else []
+    help_text = "OpenRouter rejected the API key. " + AUTH_HELP if str(error) == "HTTP_401" else str(error)
+    return limits, True, number(cached.get("fetchedAtMs")), "OpenRouter unavailable", help_text
+
+  limits = key_limit_meter(key_info if isinstance(key_info, dict) else {})
+  fetched_at = round(time.time() * 1000)
+  try:
+    write_json(limits_cache(), {"fetchedAtMs": fetched_at, "limits": limits})
+  except Exception as exc:
+    print(f"omarchy-agent-usage-openrouter: could not write limits cache ({exc})", file=sys.stderr)
+  return limits, False, fetched_at, "", ""
+
+
 def scan(args: Any) -> dict[str, Any]:
   config = read_config()
   key = api_key(config)
-  if not key:
+  manager = management_key(config)
+  if not key and not manager:
     return base_record(usageStatusText="OpenRouter unavailable", authHelpText=AUTH_HELP)
 
   today = datetime.now().astimezone()
@@ -489,7 +511,7 @@ def scan(args: Any) -> dict[str, Any]:
   # Tier 2 first: with a management key the 30-day account history covers
   # every machine and client. Without one (or a rejected one) fall back to
   # the local opencode DB scan below.
-  managed = activity_stats(management_key(config), today)
+  managed = activity_stats(manager, today)
   if managed is not None:
     stats = managed
     complete = True
@@ -502,26 +524,12 @@ def scan(args: Any) -> dict[str, Any]:
     has_prompt_stats = True
   has_data = number(stats.get("totalPrompts")) > 0 or bool(stats.get("modelUsage"))
 
-  # The key-limit meter. A failed lookup keeps the last good meter, marked
-  # stale, and leaves the token stats standing.
-  limits, stale, fetched_at = [], False, 0
-  status = help_text = ""
-  try:
-    key_info = api_get("/key", key).get("data", {})
-    if not isinstance(key_info, dict):
-      key_info = {}
-    limits = key_limit_meter(key_info)
-    fetched_at = round(time.time() * 1000)
-    try:
-      write_json(limits_cache(), {"fetchedAtMs": fetched_at, "limits": limits})
-    except Exception as exc:
-      print(f"omarchy-agent-usage-openrouter: could not write limits cache ({exc})", file=sys.stderr)
-  except OpenRouterError as error:
-    cached = read_fresh_json(limits_cache(), float("inf")) or {}
-    limits = cached.get("limits") if isinstance(cached.get("limits"), list) else []
-    stale, fetched_at = True, number(cached.get("fetchedAtMs"))
-    status = "OpenRouter unavailable"
-    help_text = "OpenRouter rejected the API key. " + AUTH_HELP if str(error) == "HTTP_401" else str(error)
+  # The meter describes an inference key's own credit limit, so with only a
+  # management key there is none to show.
+  if key:
+    limits, stale, fetched_at, status, help_text = key_meter(key)
+  else:
+    limits, stale, fetched_at, status, help_text = [], False, 0, "", ""
 
   # Balance: total purchased minus total used. A transport failure here
   # must not take the token stats down -- retryAdvised asks the shell for
@@ -529,7 +537,7 @@ def scan(args: Any) -> dict[str, Any]:
   balance = None
   retry_advised = False
   try:
-    credits = api_get("/credits", key).get("data", {})
+    credits = api_get("/credits", key or manager).get("data", {})
     total_credits = float(credits.get("total_credits") or 0)
     total_usage = float(credits.get("total_usage") or 0)
     if total_credits > 0:
