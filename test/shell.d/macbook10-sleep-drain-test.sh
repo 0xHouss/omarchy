@@ -98,8 +98,6 @@ pass "status reports the applied wakeup disable"
 udev="$test_tmp/99-omarchy-macbook10-wifi-wakeup.rules"
 unit="$test_tmp/omarchy-macbook10-sleep-drain.service"
 hook="$test_tmp/sleep-hook"
-logind="$test_tmp/30-macbook10-suspend-then-hibernate.conf"
-sleep_conf="$test_tmp/30-macbook10-hibernate-delay.conf"
 resume="$test_tmp/omarchy_resume.conf"
 
 run_leaf() {
@@ -111,13 +109,11 @@ run_leaf() {
     OMARCHY_MACBOOK10_SLEEP_UDEV="$udev" \
     OMARCHY_MACBOOK10_SLEEP_UNIT="$unit" \
     OMARCHY_MACBOOK10_SLEEP_HOOK="$hook" \
-    OMARCHY_MACBOOK10_SLEEP_LOGIND="$logind" \
-    OMARCHY_MACBOOK10_SLEEP_CONF="$sleep_conf" \
     OMARCHY_MACBOOK10_RESUME_CONF="$2" \
     bash -eE -o pipefail -c 'source "$1"' bash "$leaf"
 }
 
-rm -f "$udev" "$unit" "$hook" "$logind" "$sleep_conf"
+rm -f "$udev" "$unit" "$hook"
 run_leaf "MacBookPro14,1" "$resume"
 [[ ! -f $udev ]] || fail "setup skips unrelated hardware"
 [[ ! -s $calls ]] || fail "setup escalates nothing on unrelated hardware" "$(cat "$calls")"
@@ -134,19 +130,11 @@ grep -Fxq "exec /usr/bin/omarchy-hw-macbook10-sleep-drain" "$hook" ||
   fail "the sleep hook runs the packaged sleep-drain command" "$(cat "$hook")"
 ! grep -Fq "$ROOT" "$unit" "$hook" ||
   fail "root never runs the checkout OMARCHY_PATH points at" "$(cat "$unit" "$hook")"
-[[ ! -f $logind ]] || fail "setup does not change the lid action"
 grep -Fq $'systemctl\tenable\t--now\tomarchy-macbook10-sleep-drain.service' "$calls" ||
   fail "setup enables the sleep-drain service" "$(cat "$calls")"
-pass "setup installs wakeup disable and leaves lid-close as S3"
-
-printf 'HandleLidSwitch=suspend-then-hibernate\n' >"$logind"
-printf 'HibernateDelaySec=30min\n' >"$sleep_conf"
-run_leaf "MacBook10,1" "$resume"
-[[ ! -f $logind ]] || fail "setup removes a previous hibernate-on-lid drop-in"
-[[ ! -f $sleep_conf ]] || fail "setup removes a previous hibernate delay drop-in"
-grep -Fq $'systemctl\treload\tsystemd-logind' "$calls" ||
-  fail "setup reloads logind after removing hibernate-on-lid" "$(cat "$calls")"
-pass "setup removes a previous hibernate-on-lid policy"
+! grep -Eq $'\t(rm|reload)\t|logind' "$calls" ||
+  fail "setup leaves lid and sleep configuration it does not own alone" "$(cat "$calls")"
+pass "setup installs wakeup disable and leaves lid and sleep configuration alone"
 
 : >"$calls"
 PATH="$stub_bin:$ROOT/bin:$PATH" \
@@ -156,8 +144,6 @@ PATH="$stub_bin:$ROOT/bin:$PATH" \
   OMARCHY_MACBOOK10_SLEEP_UDEV="$udev" \
   OMARCHY_MACBOOK10_SLEEP_UNIT="$unit" \
   OMARCHY_MACBOOK10_SLEEP_HOOK="$hook" \
-  OMARCHY_MACBOOK10_SLEEP_LOGIND="$logind" \
-  OMARCHY_MACBOOK10_SLEEP_CONF="$sleep_conf" \
   OMARCHY_MACBOOK10_RESUME_CONF="$resume" \
   bash -euo pipefail "$migration"
 grep -Fq $'systemctl\tenable\t--now\tomarchy-macbook10-sleep-drain.service' "$calls" ||

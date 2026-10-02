@@ -12,8 +12,6 @@ if omarchy-hw-match "MacBook10,1"; then
   udev_rules=${OMARCHY_MACBOOK10_SLEEP_UDEV:-/etc/udev/rules.d/99-omarchy-macbook10-wifi-wakeup.rules}
   unit_path=${OMARCHY_MACBOOK10_SLEEP_UNIT:-/etc/systemd/system/omarchy-macbook10-sleep-drain.service}
   sleep_hook=${OMARCHY_MACBOOK10_SLEEP_HOOK:-/usr/lib/systemd/system-sleep/omarchy-macbook10-sleep-drain}
-  logind_dropin=${OMARCHY_MACBOOK10_SLEEP_LOGIND:-/etc/systemd/logind.conf.d/30-macbook10-suspend-then-hibernate.conf}
-  sleep_dropin=${OMARCHY_MACBOOK10_SLEEP_CONF:-/etc/systemd/sleep.conf.d/30-macbook10-hibernate-delay.conf}
 
   sudo mkdir -p "$(dirname "$udev_rules")" "$(dirname "$unit_path")" "$(dirname "$sleep_hook")"
 
@@ -40,9 +38,6 @@ EOF
 exec /usr/bin/omarchy-hw-macbook10-sleep-drain
 EOF
   sudo chmod 755 "$sleep_hook"
-
-  sudo rm -f "$logind_dropin" "$sleep_dropin"
-  sudo systemctl reload systemd-logind >/dev/null 2>&1 || true
 
   sudo systemctl daemon-reload
   sudo systemctl enable --now omarchy-macbook10-sleep-drain.service
