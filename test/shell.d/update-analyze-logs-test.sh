@@ -64,6 +64,12 @@ write_log skipped <<'EOF'
 EOF
 assert_quiet skipped "a preset mkinitcpio skips is not a failure"
 
+write_log preset-load-failed <<'EOF'
+(5/5) Updating linux initcpios...
+==> ERROR: Failed to load preset: '/etc/mkinitcpio.d/linux.preset'
+EOF
+assert_warns preset-load-failed "a preset that fails to load before any build is a failure"
+
 write_log started <<'EOF'
 (5/5) Updating linux initcpios...
 ==> Building image from preset: /etc/mkinitcpio.d/linux-asahi.preset: 'default'

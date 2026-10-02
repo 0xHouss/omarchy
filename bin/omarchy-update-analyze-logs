@@ -15,7 +15,8 @@ initramfs_failed() {
 
   [[ -f $update_log ]] || return 1
 
-  if grep -q -e "Initcpio image generation FAILED" \
+  if grep -q -e "Failed to load preset" \
+    -e "Initcpio image generation FAILED" \
     -e "Early uncompressed CPIO image generation FAILED" \
     -e "Unified kernel image generation FAILED" \
     -e "errors were encountered during the build. The image may not be complete." \
