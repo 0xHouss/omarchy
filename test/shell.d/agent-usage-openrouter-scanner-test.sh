@@ -167,4 +167,43 @@ check "$(jq -c '.stale | {stale, percent, ready}' <<<"$stale_check")" '{"stale":
 check "$(jq -r '.stale.fetchedAt == .live.fetchedAt and .live.fetchedAt > 0' <<<"$stale_check")" "true" "stale meter keeps when it was fetched"
 check "$(jq -r .status <<<"$stale_check")" "OpenRouter unavailable" "a failed lookup says so"
 
+# 5. A read that times out (headers or body) is a transport failure: the
+# record keeps its stats and last meter instead of going blank.
+timeout_check=$(python3 - "$COLLECTOR" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+loader = importlib.machinery.SourceFileLoader("or_collector4", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+class StalledBody:
+  def __enter__(self): return self
+  def __exit__(self, *args): return False
+  def read(self, *args): raise TimeoutError("The read operation timed out")
+
+results = {}
+for name, opener in (
+  ("headers", lambda request, timeout=None: (_ for _ in ()).throw(TimeoutError("timed out"))),
+  ("body", lambda request, timeout=None: StalledBody()),
+):
+  mod.urllib.request.urlopen = opener
+  try:
+    mod.api_get("/key", "sk-test")
+    results[name] = "no error"
+  except mod.OpenRouterTransportError:
+    results[name] = "transport"
+  except Exception as error:
+    results[name] = type(error).__name__
+
+class Args: force = True; limits_only = False
+os.environ["OPENROUTER_API_KEY"] = "sk-test"
+os.environ["OPENROUTER_MANAGEMENT_KEY"] = ""
+record = mod.scan(Args())
+results["record"] = {"ready": record["ready"], "stale": record["limitsStale"], "meter": bool(record["limits"]), "retry": record.get("retryAdvised", False), "prompts": record["totalPrompts"]}
+print(json.dumps(results))
+PY
+)
+check "$(jq -r '.headers + ":" + .body' <<<"$timeout_check")" "transport:transport" "read timeouts are transport failures"
+check "$(jq -c .record <<<"$timeout_check")" '{"ready":true,"stale":true,"meter":true,"retry":true,"prompts":1}' "a timed-out probe keeps stats and the last meter and asks for a retry"
+
 pass "ALL OPENROUTER SCANNER TESTS PASSED"

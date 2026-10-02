@@ -176,6 +176,10 @@ def api_get(path: str, key: str) -> dict:
     raise OpenRouterError(f"OpenRouter API returned HTTP {error.code}")
   except urllib.request.URLError as error:
     raise OpenRouterTransportError("Could not reach the OpenRouter API") from error
+  # A server that stalls on its headers or body times out the read itself,
+  # outside URLError; that is a network failure like any other.
+  except (TimeoutError, ConnectionError) as error:
+    raise OpenRouterTransportError("Could not reach the OpenRouter API") from error
   except (json.JSONDecodeError, ValueError) as error:
     raise OpenRouterError("OpenRouter returned an invalid response") from error
 
