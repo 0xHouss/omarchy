@@ -78,6 +78,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `agy` | Google's Cloud Code API (`loadCodeAssist` for the plan, `retrieveUserQuotaSummary` for the 5-hour and weekly windows) | `history.jsonl`, `conversation_summaries.db`, and each conversation's `transcript.jsonl` under `~/.gemini/antigravity-cli/` (`AGY_DIR`) |
 | `zai` | Z.ai's coding-plan monitor endpoint (5-hour session + 7-day weekly) | pi/omp sessions on the Z.ai provider (`glm-*` models) |
 | `ollama` | Ollama Cloud's usage endpoint (5-hour session + 7-day weekly) | pi and omp sessions on the `ollama-cloud` provider |
+| `minimax` | MiniMax Token Plan API (5-hour session + 7-day weekly) | Not available from the quota API |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -137,6 +138,8 @@ Ollama Cloud serves, set a model prefix in
 
 `modelPrefix` restricts the local stats to models whose name starts with the
 prefix (empty means every model); `apiKey` overrides the key lookup order.
+
+MiniMax reads `MINIMAX_API_KEY` first, then the API key or OAuth session saved by `mmx auth login`, then the key opencode stores when MiniMax is signed in there. It uses the region and resource URL saved by `mmx`, or the global `https://api.minimax.io` endpoint by default; `MINIMAX_BASE_URL` overrides both. Run `mmx auth refresh` if the panel reports that a saved OAuth session expired.
 
 ### Fireworks balance
 
