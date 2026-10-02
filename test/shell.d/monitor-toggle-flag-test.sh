@@ -98,6 +98,15 @@ pass "the writer refuses an empty body and leaves the previous flag intact"
     "$(find "$flag_dir" -name '.internal-monitor-disable.*')"
 pass "the writer leaves no temporary file behind"
 
+# A directory in the flag's place would swallow the rename and report success.
+mkdir "$flag_dir/occupied.lua"
+printf 'hl.config({})\n' | run omarchy-hyprland-toggle-write occupied 2>/dev/null &&
+  fail "the writer refuses to install a flag over a directory"
+[[ -z $(ls -A "$flag_dir/occupied.lua") ]] ||
+  fail "a refused write leaves nothing inside the directory in its place"
+rmdir "$flag_dir/occupied.lua"
+pass "the writer refuses to install a flag over a directory"
+
 # off() used to redirect straight into a directory that may not exist yet, then
 # notify and reload as though it had written something.
 rm -rf "$home_dir/.local"
