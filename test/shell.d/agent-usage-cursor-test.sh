@@ -152,3 +152,43 @@ pass "Cursor collector separates today from the rest of the week"
 [[ $(jq -r '.carriedRecentDays' <<<"$result") == "true" && $(jq -r '.carriedSkipsAggregation' <<<"$result") == "true" ]] ||
   fail "Cursor collector keeps the token sections on --limits-only" "$result"
 pass "Cursor collector keeps the token sections on --limits-only"
+
+# Someone who only uses the Cursor editor has no CLI auth file; the editor's
+# own sign-in in state.vscdb stands in, read without touching the database.
+ide=$(python3 - "$ROOT/bin/omarchy-agent-usage-cursor" "$TEST_HOME/ide" "$TEST_HOME/.config/cursor/auth.json" <<'PY'
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+os.environ.pop("CURSOR_API_KEY", None)
+loader = importlib.machinery.SourceFileLoader("cursor_collector", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+collector = importlib.util.module_from_spec(spec)
+loader.exec_module(collector)
+
+root = Path(sys.argv[2])
+db = root / "Cursor" / "User" / "globalStorage" / "state.vscdb"
+db.parent.mkdir(parents=True)
+conn = sqlite3.connect(db)
+conn.execute("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)")
+conn.execute("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'ide_token')")
+conn.commit()
+conn.close()
+before = hashlib.sha256(db.read_bytes()).hexdigest()
+
+os.environ["XDG_CONFIG_HOME"] = str(root)
+print(json.dumps({
+  "ide": collector.read_token(root / "cursor" / "auth.json"),
+  "cliWins": collector.read_token(Path(sys.argv[3])),
+  "untouched": hashlib.sha256(db.read_bytes()).hexdigest() == before and sorted(p.name for p in db.parent.iterdir()) == ["state.vscdb"],
+}))
+PY
+)
+[[ $(jq -c . <<<"$ide") == '{"ide":"ide_token","cliWins":"cursor_test","untouched":true}' ]] ||
+  fail "Cursor collector falls back to the editor's sign-in, read-only" "$ide"
+pass "Cursor collector falls back to the editor's sign-in, read-only"

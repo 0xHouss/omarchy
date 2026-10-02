@@ -101,8 +101,9 @@ again. Fireworks reads
 `~/.fireworks/auth.ini` (which `firectl set-api-key` creates), then the key
 opencode stores in `~/.local/share/opencode/auth.json` when Fireworks is
 signed in there. Cursor reads `CURSOR_API_KEY` first, then the token
-`cursor-agent login` stores in `~/.config/cursor/auth.json`, and honors
-`CURSOR_API_ENDPOINT`.
+`cursor-agent login` stores in `~/.config/cursor/auth.json`, then the
+editor's own sign-in in `~/.config/Cursor/User/globalStorage/state.vscdb`
+(opened read-only), and honors `CURSOR_API_ENDPOINT`.
 
 ### Cursor
 
