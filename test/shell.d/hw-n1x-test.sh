@@ -72,6 +72,7 @@ assert_succeeds grep -Fq 'omarchy-hw-n1x || return 0' "$n1x" "n1x.sh is gated on
 assert_succeeds grep -Fq '/etc/limine-entry-tool.d/00-omarchy-n1x-console.conf' "$n1x" "console drop-in is written"
 assert_succeeds grep -Fq 'KERNEL_CMDLINE[default]+=" console=tty0 acpi=nospcr"' "$n1x" "console fragment pins the panel and leaves the boot quiet"
 assert_succeeds grep -Fqx 'n1x_kernel=linux-omarchy-n1x' "$n1x" "N1x installs run linux-omarchy-n1x"
+assert_succeeds grep -Fq 'pacman -Qq linux linux-headers linux-n1x linux-n1x-headers' "$n1x" "stray kernels are removed only when installed"
 assert_succeeds grep -Fq 'KERNEL_CMDLINE[$n1x_kernel-rescue]=' "$n1x" "rescue entry has its own cmdline key"
 assert_succeeds grep -Fq 'BOOT_ORDER=\"$n1x_kernel, $n1x_kernel-rescue, *fallback, *, Snapshots\"' "$n1x" "normal entry boots by default, rescue next"
 assert_succeeds grep -Fq 'install nvidia_drm /bin/false' "$n1x" "NVIDIA stack blocked against explicit loads on pre-release firmware"

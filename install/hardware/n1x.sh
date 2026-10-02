@@ -14,7 +14,12 @@ echo "Detected NVIDIA N1x platform, applying bring-up configuration..."
 # older 7.0-based linux-n1x are gone so Limine shows a single kernel.
 n1x_kernel=linux-omarchy-n1x
 omarchy-pkg-add "$n1x_kernel" "$n1x_kernel-headers"
-pacman -Rdd --noconfirm linux linux-headers linux-n1x linux-n1x-headers 2>/dev/null || true
+# pacman -R refuses the whole transaction when any target is missing, so only
+# name the ones that are installed.
+mapfile -t n1x_stray_kernels < <(pacman -Qq linux linux-headers linux-n1x linux-n1x-headers 2>/dev/null || true)
+if (( ${#n1x_stray_kernels[@]} )); then
+  pacman -Rdd --noconfirm "${n1x_stray_kernels[@]}"
+fi
 if pacman -Qq linux &>/dev/null; then
   echo "WARNING: stock linux kernel still installed alongside $n1x_kernel:"
   pacman -Qi linux | grep -i "required by"
@@ -44,7 +49,7 @@ if [[ -z $root_cmdline || $root_cmdline != *root=* ]]; then
   echo "Error: /etc/kernel/cmdline has no root= (Limine defaults not written yet)" >&2
   return 1
 fi
-rescue_cmdline="$root_cmdline omarchy.n1x_recovery=1 acpi=nospcr plymouth.enable=0 nomodeset module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau modprobe.blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau nvidia_drm.modeset=0 systemd.unit=multi-user.target console=tty0 fbcon=map:0 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.log_target=console udev.log_level=debug vt.global_cursor_default=1"
+rescue_cmdline="$root_cmdline initramfs_async=0 omarchy.n1x_recovery=1 acpi=nospcr plymouth.enable=0 nomodeset module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau modprobe.blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau nvidia_drm.modeset=0 systemd.unit=multi-user.target console=tty0 fbcon=map:0 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.log_target=console udev.log_level=debug vt.global_cursor_default=1"
 printf '%s\n' \
   '# N1x bring-up: the rescue entry sits right below the normal one.' \
   "KERNEL_CMDLINE[$n1x_kernel-rescue]=\"$rescue_cmdline\"" \
