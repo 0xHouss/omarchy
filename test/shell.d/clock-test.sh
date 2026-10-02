@@ -151,6 +151,16 @@ const stepped = withoutLocalTime(() => calendar.stepMonth(2026, 8, 1))
 assertEqual(stepped.localTimeUse, '', 'calendar steps months without reading local time')
 assertDeepEqual(stepped.value, { year: 2026, month: 9 }, 'calendar steps from September to October')
 
+// Samoa skipped 30 December 2011 outright, a gap even V8 cannot paper over.
+const previousTZ = process.env.TZ
+process.env.TZ = 'Pacific/Apia'
+const apia = calendar.monthGrid(2011, 11, 1, '')
+if (previousTZ === undefined) delete process.env.TZ
+else process.env.TZ = previousTZ
+assertDeepEqual(apia[4].days.map(day => day.day), [26, 27, 28, 29, 30, 31, 1], 'calendar keeps a day the local zone skipped')
+
+assert(/viewDate: new Date\(viewYear, viewMonth, 1, 12\)/.test(panelSource), 'calendar names the heading month from a noon that always exists')
+
 // ---- stepping
 assertDeepEqual(calendar.stepMonth(2026, 0, 1), { year: 2026, month: 1 }, 'calendar steps to the next month')
 assertDeepEqual(calendar.stepMonth(2026, 0, -1), { year: 2025, month: 11 }, 'calendar steps back across the new year')
