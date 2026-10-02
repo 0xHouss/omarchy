@@ -74,7 +74,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `codex` | The Codex app-server RPC | native Codex CLI session files (plus pi and opencode sessions) |
 | `grok` | The credits endpoint behind Grok's `/usage` view (the billing period's included usage) | Each session's `usage.json` (the ledger `grok usage` prints: tokens by model per finished turn), plus `summary.json` for sessions |
 | `cursor` | Cursor's dashboard RPCs: included, auto-model, named-model, and on-demand meters | the same dashboard RPCs, one call per day for the last week |
-| `opencode` | OpenCode Zen's Go usage endpoint (rolling + weekly + monthly) | pi and omp sessions on an opencode provider, plus opencode's own message store (`message`, falling back to `session_message`) |
+| `opencode` | OpenCode Go's usage endpoint (rolling + weekly + monthly), with an API key or the Console session | pi and omp sessions on the Zen and Go providers, plus opencode's own `message` and `session_message` stores |
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
@@ -123,11 +123,22 @@ past 100% while Cursor's own meters do not. The on-demand row is the exception
 and is a real ratio: dollars spent against the on-demand limit the account
 sets.
 
-OpenCode limits read `OPENCODE_API_KEY` first, then opencode's own credential
-store, then pi's. A recent probe answer is reused for 15 seconds, so opening
-the panel repeatedly does not repeat the request, and cached windows are
-dropped once they reset. Without a key the panel still shows local token
-usage.
+### OpenCode
+
+One record covers the OpenCode subscription, Zen and Go together: usage on
+the `opencode` and `opencode-go` providers. opencode sessions on an Anthropic
+or OpenAI provider stay in the `claude` and `codex` records, so nothing counts
+twice. Both of opencode's message stores are read (`message` and V2's
+`session_message`, deduplicated by message id, leaving out the copies a fork
+makes), from the database `OPENCODE_DB` names when set.
+
+The Go meters read `OPENCODE_API_KEY` first, then the keys opencode keeps in
+its database and `auth.json`, then pi's, and last the OpenCode Console
+session, which asks Console's own endpoint with its workspace id. A refused
+credential hands over to the next one. A recent answer is reused for 15
+seconds, each credential caches its own, a failed check keeps the last good
+windows, dimmed, until they reset, and a rate-limited window reads as full.
+Without a Go plan the panel still shows local token usage.
 
 ### Fireworks balance
 

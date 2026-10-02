@@ -5,8 +5,11 @@
 """Collect OpenCode usage into one display-ready JSON record.
 
 Local stats come from pi/omp sessions that ran through an opencode provider
-and from opencode's own message database. The agents panel only ever reads
-the JSON this prints.
+and from opencode's own message database, both of its stores. Only the Zen
+and Go providers count: opencode runs on Anthropic or OpenAI belong to the
+claude and codex records. The limits are the Go plan's rolling, weekly, and
+monthly meters from OpenCode's usage endpoint. The agents panel only ever
+reads the JSON this prints.
 """
 
 import argparse
@@ -24,15 +27,21 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 AGENT_ID = "opencode"
 AGENT_NAME = "OpenCode"
 
 # The subscription meters live on the Zen "go" gateway; the plain gateway has
 # no usage endpoint. Limits are per-account, so they come from the same key
-# regardless of which provider id a given run used.
-DEFAULT_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+# regardless of which provider id a given run used. A Console session asks
+# Console's own endpoint for the same numbers.
+API_BASE_URL = "https://opencode.ai"
+USAGE_PATH = "/zen/go/v1/usage"
+CONSOLE_USAGE_PATH = "/inference/go/v1/usage"
+CONSOLE_ORG_HEADER = "x-opencode-org-id"
 AUTH_HELP = "Run `opencode providers login`, set OPENCODE_API_KEY, or sign in with pi to read subscription limits."
+CONSOLE_EXPIRED_HELP = "OpenCode's Console session has expired. Run `opencode auth login` to refresh it."
 
 # A panel opened and closed repeatedly must not become one request per flick.
 PROBE_MIN_INTERVAL_SECONDS = 15
@@ -235,6 +244,25 @@ def scan_pi_sessions():
       proc.kill()
 
 
+def data_home():
+  return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
+
+
+def opencode_db():
+  # OPENCODE_DB points opencode at another database, as the CLI itself reads
+  # it; a relative name lives beside the default one. Only a build whose
+  # channel was literally "v2" wrote opencode-v2.db, so it is a fallback for
+  # those installs alone.
+  root = data_home() / "opencode"
+  configured = os.environ.get("OPENCODE_DB", "").strip()
+  if configured:
+    path = Path(configured).expanduser()
+    return path if path.is_absolute() else root / path
+  normal = root / "opencode.db"
+  legacy = root / "opencode-v2.db"
+  return legacy if not normal.is_file() and legacy.is_file() else normal
+
+
 def table_columns(conn, table):
   try:
     return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
@@ -242,14 +270,22 @@ def table_columns(conn, table):
     return []
 
 
-def store_row(session_id, entry, created):
-  # Shared by both message tables: same JSON shape, different containers.
-  if not isinstance(entry, dict) or entry.get("role") != "assistant":
-    return False
+def store_row(message_id, session_id, entry, row_type, created, seen):
+  # Shared by both message stores. The original `message` table keeps the
+  # provider and model at the top level; the V2 `session_message` table nests
+  # them under `model` and keeps the role in its `type` column, with a
+  # compaction's tokens spent like any reply's.
+  if not isinstance(entry, dict):
+    return
+  if (entry.get("role") or row_type) not in ("assistant", "compaction"):
+    return
+  model = entry.get("model")
+  provider = entry.get("providerID") or (model.get("providerID") if isinstance(model, dict) else "")
   # Exact match: opencode provider ids are free-form, and a custom
-  # "opencode-local" gateway is not this subscription.
-  if str(entry.get("providerID") or "") not in PROVIDERS:
-    return False
+  # "opencode-local" gateway is not this subscription. Anthropic and OpenAI
+  # runs never match, so the claude and codex collectors keep those.
+  if str(provider or "") not in PROVIDERS:
+    return
   tokens = entry.get("tokens") or {}
   cache = tokens.get("cache") or {}
   input_tokens = number(tokens.get("input"))
@@ -258,21 +294,52 @@ def store_row(session_id, entry, created):
   cache_read = number(cache.get("read"))
   cache_write = number(cache.get("write"))
   if not (input_tokens or output_tokens or cache_read or cache_write):
-    return False
+    return
+  # A migrated message can sit in both stores under the same id.
+  if message_id in seen:
+    return
+  seen.add(message_id)
   day = local_day((entry.get("time") or {}).get("created") or created)
-  model = model_name(entry.get("model") or entry.get("modelID"))
-  add_usage(day, "opencode:" + str(session_id), model, input_tokens, output_tokens, cache_read, cache_write)
-  return True
+  add_usage(day, "opencode:" + str(session_id), model_name(entry.get("modelID") or model), input_tokens, output_tokens, cache_read, cache_write)
 
 
-def scan_message_rows(conn):
-  # Current opencode writes one row per chat message here. The LIKE gates
-  # skip rows whose JSON cannot hold the key/value pairs before any parse.
-  # json_extract is the authority after them: it RAISES on malformed JSON, so
-  # each call sits inside a json_valid CASE rather than a bare AND term.
-  found = 0
-  for session_id, raw in conn.execute(
-    "SELECT session_id, data FROM message"
+def scan_session_message_rows(conn, tables, seen):
+  # The V2 store. The LIKE gate skips rows whose JSON cannot name one of the
+  # providers before any parse.
+  columns = set(table_columns(conn, "session_message"))
+  if not {"id", "session_id", "type", "data"} <= columns:
+    return
+  created = "m.time_created" if "time_created" in columns else "NULL"
+  source = "session_message m"
+  fork_filter = ""
+  if "time_created" in columns and "session_v2" in tables and {"id", "fork_session_id", "time_created"} <= set(table_columns(conn, "session_v2")):
+    # A fork copies its source session's messages under new ids; only what
+    # came after the fork was spent in it.
+    source += " LEFT JOIN session_v2 s ON s.id = m.session_id"
+    fork_filter = " AND (s.fork_session_id IS NULL OR m.time_created >= s.time_created)"
+  for message_id, session_id, row_type, time_created, raw in conn.execute(
+    f"SELECT m.id, m.session_id, m.type, {created}, m.data FROM {source}"
+    " WHERE m.type IN ('assistant', 'compaction')"
+    " AND m.data LIKE '%\"providerID\"%:%\"opencode%'" + fork_filter
+  ):
+    try:
+      entry = json.loads(raw)
+    except (TypeError, ValueError):
+      continue
+    store_row(str(message_id), session_id, entry, str(row_type or ""), time_created, seen)
+
+
+def scan_message_rows(conn, seen):
+  # The original store, one row per chat message. The LIKE gates skip rows
+  # whose JSON cannot hold the key/value pairs before any parse. json_extract
+  # is the authority after them: it RAISES on malformed JSON, so each call
+  # sits inside a json_valid CASE rather than a bare AND term.
+  columns = set(table_columns(conn, "message"))
+  if not {"session_id", "data"} <= columns:
+    return
+  message_id = "id" if "id" in columns else "rowid"
+  for row_id, session_id, raw in conn.execute(
+    f"SELECT {message_id}, session_id, data FROM message"
     " WHERE data LIKE '%\"role\"%:%\"assistant\"%'"
     " AND (data LIKE '%\"providerID\"%:%\"opencode\"%' OR data LIKE '%\"providerID\"%:%\"opencode-go\"%')"
     " AND CASE WHEN json_valid(data) THEN json_extract(data, '$.role') END = 'assistant'"
@@ -280,32 +347,9 @@ def scan_message_rows(conn):
   ):
     try:
       entry = json.loads(raw)
-    except ValueError:
+    except (TypeError, ValueError):
       continue
-    if store_row(session_id, entry, None):
-      found += 1
-  return found
-
-
-def scan_session_message_rows(conn):
-  # Some builds move the same message JSON into session_message with the role
-  # in a `type` column. It is empty on the current release, so this only runs
-  # when `message` held no assistant rows; that keeps the two stores from
-  # double counting a session if both ever carry it.
-  columns = table_columns(conn, "session_message")
-  if "type" not in columns or "data" not in columns:
-    return 0
-  found = 0
-  for session_id, row_type, created, raw in conn.execute("SELECT session_id, type, time_created, data FROM session_message"):
-    try:
-      entry = json.loads(raw)
-    except ValueError:
-      continue
-    if isinstance(entry, dict) and not entry.get("role"):
-      entry["role"] = str(row_type or "")
-    if store_row(session_id, entry, created):
-      found += 1
-  return found
+    store_row(str(row_id), session_id, entry, "", None, seen)
 
 
 def scan_opencode_db():
@@ -315,7 +359,7 @@ def scan_opencode_db():
   # Returns whether the scan ran to completion: a scan cut short by a
   # database error still contributes what it read, but must not be cached
   # as if it were the whole story.
-  db = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
+  db = opencode_db()
   if not db.is_file():
     return True
   try:
@@ -324,11 +368,14 @@ def scan_opencode_db():
     return False
   try:
     conn.execute("PRAGMA query_only = ON")
-    # Read the current store first, the migrated one only when `message` held
-    # nothing, so a store that has both cannot count a session twice.
-    found = scan_message_rows(conn) if table_columns(conn, "message") else 0
-    if found == 0:
-      scan_session_message_rows(conn)
+    tables = {name for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    # Both stores, V2 first, deduplicated by message id: a build that
+    # migrated keeps reading, and a message in both counts once.
+    seen = set()
+    if "session_message" in tables:
+      scan_session_message_rows(conn, tables, seen)
+    if "message" in tables:
+      scan_message_rows(conn, seen)
   except sqlite3.Error:
     # Transient lock, schema migration, corruption: the numbers stop here,
     # incomplete.
@@ -345,7 +392,7 @@ def cache_root():
 
 
 def scan_cache_paths():
-  db = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
+  db = opencode_db()
   # The digest covers every data path the scan reads: the opencode DB and,
   # via Path.home(), the pi/omp session roots.
   digest = hashlib.sha1((str(Path.home()) + "\n" + str(db)).encode("utf-8")).hexdigest()[:16]
@@ -473,6 +520,15 @@ def _cached_local_stats(max_age):
     return stats
 
 
+class Credential(NamedTuple):
+  """One way of asking OpenCode for the Go meters."""
+
+  token: str
+  url: str
+  headers: dict
+  expired: bool = False
+
+
 def read_auth_key(path):
   try:
     parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -490,37 +546,120 @@ def read_auth_key(path):
   return ""
 
 
-def subscription_key():
-  # An explicit key wins, then opencode's own credential store, then pi's. pi
-  # drives the same Zen subscription and records it under the same provider
-  # ids, so a machine that codes through pi never signs the opencode CLI in.
-  explicit = str(os.environ.get("OPENCODE_API_KEY", "")).strip()
-  if explicit:
-    return explicit
-  data_home = Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share"))
-  key = read_auth_key(data_home / "opencode" / "auth.json")
-  if key:
-    return key
-  return read_auth_key(Path.home() / ".pi" / "agent" / "auth.json")
+def read_store_credentials(db):
+  """The active credentials opencode V2 keeps in its database: Go keys, and
+  the Console session it signs the opencode integration in with."""
+  keys, console = [], None
+  if not db.is_file():
+    return keys, console
+  try:
+    conn = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+  except sqlite3.Error:
+    return keys, console
+  try:
+    conn.execute("PRAGMA query_only = ON")
+    rows = conn.execute(
+      "SELECT integration_id, value FROM credential WHERE active = 1 AND integration_id IN ('opencode-go', 'opencode')"
+      " ORDER BY integration_id = 'opencode-go' DESC, time_updated DESC"
+    ).fetchall()
+  except sqlite3.Error:
+    return keys, console
+  finally:
+    conn.close()
+  for _, raw in rows:
+    try:
+      value = json.loads(raw)
+    except (TypeError, ValueError):
+      continue
+    if not isinstance(value, dict):
+      continue
+    if value.get("type") == "key" and str(value.get("key") or "").strip():
+      keys.append(str(value["key"]).strip())
+    elif value.get("type") == "oauth" and console is None and str(value.get("access") or "").strip():
+      # Console traffic is scoped to a workspace, and a wrong one is a hard
+      # 403, so the header only goes out when the id is there.
+      metadata = value.get("metadata")
+      org = str(metadata.get("orgID") or "").strip() if isinstance(metadata, dict) else ""
+      expired = 0 < number(value.get("expires")) <= time.time() * 1000
+      console = Credential(str(value["access"]).strip(), API_BASE_URL + CONSOLE_USAGE_PATH, {CONSOLE_ORG_HEADER: org} if org else {}, expired)
+  return keys, console
 
 
-def probe_limits(key):
-  url = os.environ.get("OPENCODE_USAGE_URL") or DEFAULT_USAGE_URL
-  request = urllib.request.Request(url, headers={
-    "Authorization": "Bearer " + key,
+def credential_candidates():
+  # An explicit key wins, then opencode's own credential stores, then pi's:
+  # pi drives the same Zen subscription and records it under the same
+  # provider ids, so a machine that codes through pi never signs the opencode
+  # CLI in. The Console session is the implicit one, so it comes last. Which
+  # one the endpoint accepts isn't knowable from here, so a refused one only
+  # hands over to the next.
+  store_keys, console = read_store_credentials(opencode_db())
+  tokens = [str(os.environ.get("OPENCODE_API_KEY", "")).strip()]
+  tokens += store_keys
+  tokens.append(read_auth_key(data_home() / "opencode" / "auth.json"))
+  tokens.append(read_auth_key(Path.home() / ".pi" / "agent" / "auth.json"))
+  candidates = []
+  for token in tokens:
+    if token and token not in [c.token for c in candidates]:
+      candidates.append(Credential(token, API_BASE_URL + USAGE_PATH, {}))
+  if console is not None:
+    candidates.append(console)
+  return candidates
+
+
+def reset_from_seconds(value):
+  seconds = number(value)
+  if seconds <= 0:
+    return ""
+  return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+# The live endpoint nests the windows under "usage" with "percent" and
+# "resetsAt"; another deployment spells them "<window>Usage" with
+# "usagePercent" and "resetInSec". Both are read, so the collector doesn't
+# depend on which one answers.
+def parse_usage(payload):
+  usage = payload.get("usage") if isinstance(payload, dict) else None
+  usage = usage if isinstance(usage, dict) else (payload if isinstance(payload, dict) else {})
+  limits = []
+  for name, label in (("rolling", "Rolling (5h)"), ("weekly", "Weekly (7-day)"), ("monthly", "Monthly")):
+    window = usage.get(name)
+    if not isinstance(window, dict):
+      window = payload.get(name + "Usage") if isinstance(payload, dict) else None
+    if not isinstance(window, dict):
+      continue
+    percent = fraction(window.get("percent", window.get("usagePercent")))
+    if percent < 0:
+      continue
+    # A rate-limited window is spent until it resets, whatever it reads.
+    if str(window.get("status") or "") == "rate-limited":
+      percent = 1.0
+    limits.append({
+      "label": label,
+      "percent": max(0.0, min(1.0, percent)),
+      "resetsAt": str(window.get("resetsAt") or "").strip() or reset_from_seconds(window.get("resetInSec")),
+    })
+  return limits
+
+
+def probe_limits(credential):
+  request = urllib.request.Request(credential.url, headers={
+    "Authorization": "Bearer " + credential.token,
     "Accept": "application/json",
     # Cloudflare answers the default urllib signature with a 1010 before the
     # request reaches the API, so identify the collector instead.
     "User-Agent": "omarchy-agent-usage-opencode/1.0",
+    **credential.headers,
   })
   try:
     with urllib.request.urlopen(request, timeout=10) as response:
       payload = json.loads(response.read().decode("utf-8", errors="replace"))
   except urllib.error.HTTPError as error:
+    # A refused credential may just be the wrong one for this account, so the
+    # next way in still gets its turn.
     if error.code == 401:
-      return {"ok": False, "helpText": "OpenCode rejected the saved key. Reconnect OpenCode Go with /connect in the TUI, or set OPENCODE_API_KEY."}
+      return {"ok": False, "refused": True, "helpText": "OpenCode rejected the saved key. Reconnect OpenCode Go with /connect in the TUI, or set OPENCODE_API_KEY."}
     if error.code == 403:
-      return {"ok": False, "helpText": "The saved key has no OpenCode Go subscription behind it. Local OpenCode stats are still shown."}
+      return {"ok": False, "refused": True, "helpText": "The saved key has no OpenCode Go subscription behind it. Local OpenCode stats are still shown."}
     return {"ok": False, "helpText": f"OpenCode's usage endpoint returned status {error.code}. Local OpenCode stats are still shown."}
   except Exception:
     # A transport failure reached no server at all — no route, no DNS. Any
@@ -528,23 +667,9 @@ def probe_limits(key):
     # pestering; this is not.
     return {"ok": False, "transport": True, "helpText": "Couldn't reach OpenCode's usage endpoint. Retrying shortly. Local OpenCode stats are still shown."}
 
-  usage = payload.get("usage") if isinstance(payload, dict) else None
-  if not isinstance(usage, dict):
+  if not isinstance(payload, dict) or not payload:
     return {"ok": False, "helpText": "OpenCode's usage endpoint returned no data. Local OpenCode stats are still shown."}
-
-  limits = []
-  for name, label in (("rolling", "Rolling (5h)"), ("weekly", "Weekly (7-day)"), ("monthly", "Monthly")):
-    window = usage.get(name)
-    if not isinstance(window, dict):
-      continue
-    percent = fraction(window.get("percent"))
-    if percent < 0:
-      continue
-    limits.append({
-      "label": label,
-      "percent": max(0.0, min(1.0, percent)),
-      "resetsAt": str(window.get("resetsAt") or ""),
-    })
+  limits = parse_usage(payload)
   if not limits:
     return {"ok": False, "helpText": "OpenCode's usage endpoint returned no quota windows. Local OpenCode stats are still shown."}
   return {"ok": True, "limits": limits}
@@ -574,48 +699,75 @@ def open_cached_limits(cached):
   return [entry for entry in entries if isinstance(entry, dict) and limit_window_open(entry, now)]
 
 
-def collect_limits(force):
-  result = {"limits": [], "tierLabel": "", "usageStatusText": "Local usage only", "authHelpText": "", "retryAdvised": False}
-  probe_cache = cache_root() / "opencode-limits.json"
-  cached = read_fresh_json(probe_cache, float("inf")) or {}
-  fallback = open_cached_limits(cached)
+# One cache per credential, so a machine signed in to another account never
+# shows the last one's meters.
+def limits_cache_path(token):
+  return cache_root() / f"opencode-limits-{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}.json"
 
-  key = subscription_key()
-  if not key:
-    result["limits"] = fallback
+
+def collect_limits(force):
+  result = {"limits": [], "tierLabel": "", "usageStatusText": "Local usage only", "authHelpText": "", "retryAdvised": False, "stale": False, "fetchedAtMs": 0}
+  candidates = credential_candidates()
+  if not candidates:
     result["authHelpText"] = AUTH_HELP
     return result
 
-  # A panel opened and closed repeatedly must not become one request per
-  # flick, so a recent answer is reused; --force skips the wait.
-  fetched_at = number(cached.get("fetchedAtMs")) / 1000.0
-  if fallback and not force and 0 <= time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
-    result["limits"] = fallback
-    result["tierLabel"] = "Go"
-    result["usageStatusText"] = ""
+  # Limits only ever show for a Go plan, so a tier follows them.
+  def answer(limits, fetched_at, stale):
+    result.update(limits=limits, tierLabel="Go" if limits else "", usageStatusText="", stale=stale, fetchedAtMs=fetched_at if limits else 0)
     return result
 
-  probe = probe_limits(key)
-  if probe.get("ok"):
-    result["limits"] = probe["limits"]
-    result["tierLabel"] = "Go"
-    result["usageStatusText"] = ""
-    try:
-      write_json(probe_cache, {"fetchedAtMs": round(time.time() * 1000), "limits": probe["limits"]})
-    except Exception:
-      pass
+  refused = None
+  for candidate in candidates:
+    cache = limits_cache_path(candidate.token)
+    cached = read_fresh_json(cache, float("inf")) or {}
+    fallback = open_cached_limits(cached)
+    fetched_at = number(cached.get("fetchedAtMs"))
+
+    # A panel opened and closed repeatedly must not become one request per
+    # flick, so a recent answer is reused; --force skips the wait.
+    if fallback and not force and 0 <= time.time() - fetched_at / 1000 < PROBE_MIN_INTERVAL_SECONDS:
+      return answer(fallback, fetched_at, False)
+
+    probe = probe_limits(candidate)
+    if probe.get("ok"):
+      fetched_at = round(time.time() * 1000)
+      try:
+        write_json(cache, {"fetchedAtMs": fetched_at, "limits": probe["limits"]})
+      except Exception:
+        pass
+      return answer(probe["limits"], fetched_at, False)
+
+    if probe.get("refused"):
+      # Keep the first refusal that still has open windows, so a later
+      # credential without a cache can't blank them. A lapsed Console
+      # session is what to fix, whichever refusal is kept.
+      expired = candidate.expired or bool(refused and refused[3])
+      if refused is None or (not refused[1] and fallback):
+        refused = (probe, fallback, fetched_at, expired)
+      else:
+        refused = refused[:3] + (expired,)
+      continue
+
+    # Last good numbers, dimmed as stale, beat an empty limits section while
+    # the probe is down.
+    result["retryAdvised"] = bool(probe.get("transport"))
+    answer(fallback, fetched_at, True)
+    if not fallback:
+      result["usageStatusText"] = "OpenCode limits unavailable"
+      result["authHelpText"] = probe["helpText"]
     return result
 
-  if probe.get("transport"):
-    result["retryAdvised"] = True
-  # Last good numbers beat an empty limits section while the probe is down.
-  if fallback:
-    result["limits"] = fallback
-    result["tierLabel"] = "Go"
-    result["usageStatusText"] = ""
+  # Every way in was refused: an account problem, not an outage. Keep any
+  # still-open numbers, but say what went wrong.
+  probe, fallback, fetched_at, expired = refused
+  answer(fallback, fetched_at, True)
+  if expired:
+    result["usageStatusText"] = "OpenCode Console session expired"
+    result["authHelpText"] = CONSOLE_EXPIRED_HELP
   else:
-    result["usageStatusText"] = "OpenCode limits unavailable"
-    result["authHelpText"] = probe.get("helpText", "")
+    result["usageStatusText"] = "Sign-in rejected" if fallback else "OpenCode limits unavailable"
+    result["authHelpText"] = probe["helpText"]
   return result
 
 
@@ -633,19 +785,25 @@ def main():
   max_age = 0 if args.force else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
   stats = cached_local_stats(max_age)
   limits = collect_limits(args.force)
-  retry_advised = bool(limits.pop("retryAdvised", False))
 
+  # Nobody uses OpenCode's subscription here: no usage and no limits leave
+  # an empty tier, a record the panel skips.
   record = {
     "schemaVersion": 1,
     "id": AGENT_ID,
     "name": AGENT_NAME,
     "updatedAt": datetime.now(timezone.utc).isoformat(),
-    "ready": True,
+    "ready": number(stats.get("totalPrompts")) > 0 or bool(limits["limits"]),
     "hasLocalStats": True,
+    "tierLabel": limits["tierLabel"],
+    "usageStatusText": limits["usageStatusText"],
+    "authHelpText": limits["authHelpText"],
+    "limits": limits["limits"],
+    "limitsStale": limits["stale"],
+    "limitsFetchedAt": limits["fetchedAtMs"],
   }
   record.update(stats)
-  record.update(limits)
-  if retry_advised:
+  if limits["retryAdvised"]:
     record["retryAdvised"] = True
   print(json.dumps(record, separators=(",", ":")))
 
