@@ -40,8 +40,8 @@ check({ class = "chatgpt" }, "SUPER + C", "CTRL", "C", "Codex copy")
 check({ class = "chatgpt" }, "SUPER + X", "CTRL", "X", "Codex cut")
 
 for _, tags in ipairs({ { "terminal" }, { "other", "terminal*" } }) do
-  check({ class = "Alacritty", tags = tags }, "SUPER + V", "SHIFT", "Insert", "terminal paste")
-  check({ class = "Alacritty", tags = tags }, "SUPER + C", "CTRL", "Insert", "terminal copy")
+  check({ class = "Alacritty", tags = tags }, "SUPER + V", "CTRL SHIFT", "V", "terminal paste")
+  check({ class = "Alacritty", tags = tags }, "SUPER + C", "CTRL SHIFT", "C", "terminal copy")
   check({ class = "Alacritty", tags = tags }, "SUPER + X", "CTRL", "X", "terminal cut")
 end
 
