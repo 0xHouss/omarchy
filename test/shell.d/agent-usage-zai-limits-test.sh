@@ -118,6 +118,8 @@ unreachable=$(drive false "$cache" transport "")
   fail "Z.ai collector keeps only cached windows that have not reset" "$unreachable"
 [[ $(jq -r '.result.tierLabel' <<<"$unreachable") == "Pro" && $(jq -r '.result.retryAdvised' <<<"$unreachable") == "true" ]] ||
   fail "Z.ai collector keeps the cached tier and advises a retry after a transport failure" "$unreachable"
+[[ $(jq -c '{live: .result.live, fetchedAtMs: .result.fetchedAtMs}' <<<"$unreachable") == '{"live":false,"fetchedAtMs":1}' ]] ||
+  fail "Z.ai collector marks kept limits stale with when they were fetched" "$unreachable"
 pass "Z.ai collector serves the last known limits and advises a retry when offline"
 
 # Repeated panel opens inside the probe interval share one answer; --force does not.
@@ -138,6 +140,8 @@ forced=$(drive true "$fresh" success "$success_payload")
   fail "Z.ai collector re-probes on --force despite a fresh cache" "$forced"
 [[ $(jq -c '[.cached.limits[].percent]' <<<"$forced") == "[0.44]" && $(jq -r '.cached.tierLabel' <<<"$forced") == "Max" ]] ||
   fail "Z.ai collector caches a successful probe for the next run" "$forced"
+[[ $(jq -r '.result.live' <<<"$forced") == "true" && $(jq -r '.result.fetchedAtMs == .cached.fetchedAtMs' <<<"$forced") == "true" ]] ||
+  fail "Z.ai collector marks a fresh probe live" "$forced"
 pass "Z.ai collector re-probes on --force and caches the result"
 
 # A predictable lock path must not follow and truncate a planted symlink.

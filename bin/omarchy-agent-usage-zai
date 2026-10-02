@@ -402,9 +402,12 @@ def collect_limits(api_key: str, platform: str, force: bool) -> dict[str, Any]:
 
   Reuses a recent probe for PROBE_MIN_INTERVAL_SECONDS so repeated panel opens
   do not spam the endpoint, and keeps the last known limits as the answer of
-  record when a later probe fails but its window has not yet reset.
+  record when a later probe fails but its window has not yet reset. `live`
+  says whether the limits are this check's (or a probe recent enough to stand
+  in for one), and `fetchedAtMs` when they were measured, so the panel can dim
+  limits kept from an earlier check.
   """
-  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": "", "retryAdvised": False}
+  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": "", "retryAdvised": False, "live": False, "fetchedAtMs": 0}
 
   probe_cache = cache_root() / "zai-limits.json"
   cached = read_fresh_json(probe_cache, float("inf")) or {}
@@ -414,6 +417,7 @@ def collect_limits(api_key: str, platform: str, force: bool) -> dict[str, Any]:
   fetched_at = number(cached.get("fetchedAtMs")) / 1000 if isinstance(cached, dict) else 0
   if fallback and not force and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
     result["limits"], result["tierLabel"] = fallback, cached_tier
+    result.update(live=True, fetchedAtMs=round(fetched_at * 1000))
     return result
 
   with exclusive_lock(scan_cache_paths()[2]):
@@ -423,15 +427,17 @@ def collect_limits(api_key: str, platform: str, force: bool) -> dict[str, Any]:
       fresh = usable_cached_limits(cached) if isinstance(cached, dict) else []
       if fresh and time.time() - fetched_at < PROBE_MIN_INTERVAL_SECONDS:
         result["limits"], result["tierLabel"] = fresh, str(cached.get("tierLabel") or "")
+        result.update(live=True, fetchedAtMs=round(fetched_at * 1000))
         return result
 
     probe = fetch_limits(api_key, platform)
     if probe.get("limits"):
       result["limits"] = probe["limits"]
       result["tierLabel"] = probe.get("tierLabel", "")
+      result.update(live=True, fetchedAtMs=round(time.time() * 1000))
       try:
         write_json(probe_cache, {
-          "fetchedAtMs": round(time.time() * 1000),
+          "fetchedAtMs": result["fetchedAtMs"],
           "limits": probe["limits"],
           "tierLabel": result["tierLabel"],
         })
@@ -446,6 +452,7 @@ def collect_limits(api_key: str, platform: str, force: bool) -> dict[str, Any]:
     result["retryAdvised"] = True
   if fallback:
     result["limits"], result["tierLabel"] = fallback, cached_tier
+    result["fetchedAtMs"] = round(fetched_at * 1000)
   result["usageStatusText"] = probe.get("status", "")
   # Only blame the key when the key is the problem; a working key with no plan,
   # or an endpoint hiccup, must not tell the user to go set a key they have.
@@ -633,6 +640,8 @@ def scan(force: bool, limits_only: bool) -> dict[str, Any]:
 
   limits = collect_limits(api_key, platform, force)
   record["limits"] = limits["limits"]
+  record["limitsStale"] = not limits["live"]
+  record["limitsFetchedAt"] = limits["fetchedAtMs"]
   if limits["tierLabel"]:
     record["tierLabel"] = limits["tierLabel"]
   record["usageStatusText"] = limits["usageStatusText"]
