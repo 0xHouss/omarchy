@@ -8,6 +8,9 @@ require_command python3
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT
 
+# A key in the environment would send the collector to DeepSeek.
+unset DEEPSEEK_API_KEY DEEPSEEK_API_BASE_URL
+
 timestamp="$(date +%Y-%m-%d)T12:00:00Z"
 
 # ---------------------------------------------------------------- pi and omp
@@ -42,9 +45,17 @@ pass "DeepSeek collector counts each message once per session"
 
 # Without a key the record must still be complete and hidden-by-default:
 # the panel shows local stats and simply omits the balance section.
-[[ $(jq -r '.id + ":" + (.ready|tostring) + ":" + (.hasPromptStats|tostring) + ":" + (has("balance")|tostring)' <<<"$result") == "deepseek:true:true:false" ]] ||
+[[ $(jq -r '.id + ":" + (.ready|tostring) + ":" + .tierLabel + ":" + (.hasPromptStats|tostring) + ":" + (has("balance")|tostring)' <<<"$result") == "deepseek:false::true:false" ]] ||
   fail "DeepSeek collector prints a valid record without a key" "$result"
 pass "DeepSeek collector prints a valid record without a key"
+
+# Nothing used and no key: a record the panel skips.
+EMPTY_HOME=$(mktemp -d)
+result=$(HOME="$EMPTY_HOME" XDG_DATA_HOME="$EMPTY_HOME/.local/share" "$ROOT/bin/omarchy-agent-usage-deepseek" 2>/dev/null)
+rm -rf "$EMPTY_HOME"
+[[ $(jq -c '{ready, tierLabel, totalPrompts, activeDays, balance: has("balance")}' <<<"$result") == '{"ready":false,"tierLabel":"","totalPrompts":0,"activeDays":0,"balance":false}' ]] ||
+  fail "DeepSeek collector prints a record the panel skips without DeepSeek" "$result"
+pass "DeepSeek collector prints a record the panel skips without DeepSeek"
 
 # ---------------------------------------------------------------- opencode
 

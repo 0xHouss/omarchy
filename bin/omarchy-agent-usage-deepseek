@@ -124,12 +124,12 @@ def base_record(**overrides: Any) -> dict[str, Any]:
     "id": AGENT_ID,
     "name": AGENT_NAME,
     "updatedAt": datetime.now(timezone.utc).isoformat(),
-    "ready": True,
+    "ready": False,
     "hasLocalStats": True,
     # Prompt and session counts are real: every pi session message carries
     # them, so today's tooltip may show "N prompts · M sessions".
     "hasPromptStats": True,
-    "tierLabel": "Prepaid",
+    "tierLabel": "",
     "usageStatusText": "",
     "authHelpText": "",
     "limits": [],
@@ -441,10 +441,12 @@ def scan(api_base_url: str) -> dict[str, Any]:
   record = base_record()
   record.update(stats.record())
 
-  # Without a key the record carries local stats only; the panel leaves the
-  # balance section out rather than reporting an error.
+  # Without a key the record carries local stats only, with no plan, so the
+  # panel leaves out the balance section, and skips the record altogether on
+  # a machine that has never used DeepSeek.
   key = api_key()
   if key:
+    record.update(ready=True, tierLabel="Prepaid")
     try:
       record["balance"] = balance_record(key, api_base_url)
     except DeepSeekError as error:
