@@ -169,11 +169,13 @@ def scan_sessions(max_age_seconds: float, model_prefix: str) -> dict[str, Any] |
     Path.home() / ".omp" / "agent" / "sessions",
   ]
   cache_file = cache_root() / "ollama-pi-sessions.json"
+  # A scan only answers for the day it ran on (its today* counts would be
+  # yesterday's after midnight) and for the model filter it applied.
+  today = local_date_string()
   cached = read_fresh_json(cache_file, max_age_seconds)
-  if cached is not None:
+  if cached is not None and cached.get("scanDate") == today and cached.get("modelPrefix") == model_prefix:
     return cached.get("stats")
 
-  today = local_date_string()
   recent_dates = recent_date_strings()
   recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
 
@@ -263,7 +265,7 @@ def scan_sessions(max_age_seconds: float, model_prefix: str) -> dict[str, Any] |
       "activeDays": len(active_days),
       "activeDates": sorted(active_days),
     }
-  write_json(cache_file, {"stats": stats})
+  write_json(cache_file, {"scanDate": today, "modelPrefix": model_prefix, "stats": stats})
   return stats
 
 

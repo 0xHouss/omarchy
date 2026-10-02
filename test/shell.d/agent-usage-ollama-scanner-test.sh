@@ -59,6 +59,25 @@ result=$(HOME="$PI_HOME" XDG_CONFIG_HOME="$PI_HOME/.config" XDG_CACHE_HOME="$PI_
   fail "Ollama collector honors the configured model prefix" "$result"
 pass "Ollama collector honors the configured model prefix"
 
+# A cached scan is reused only on the day it ran and with the filter it
+# applied: a changed prefix, or yesterday's scan, means scanning again.
+result=$(HOME="$PI_HOME" XDG_CONFIG_HOME="$PI_HOME/.config" XDG_CACHE_HOME="$PI_HOME/.cache" \
+  OLLAMA_API_KEY="" "$ROOT/bin/omarchy-agent-usage-ollama" --limits-only)
+[[ $(jq -c '.modelUsage | keys' <<<"$result") == '["kimi-k3"]' ]] ||
+  fail "Ollama collector reuses a scan made with the same filter today" "$result"
+rm "$PI_HOME/.config/omarchy/agents/ollama.json"
+result=$(HOME="$PI_HOME" XDG_CONFIG_HOME="$PI_HOME/.config" XDG_CACHE_HOME="$PI_HOME/.cache" \
+  OLLAMA_API_KEY="" "$ROOT/bin/omarchy-agent-usage-ollama" --limits-only)
+[[ $(jq -c '.modelUsage | keys' <<<"$result") == '["deepseek-v4-pro","kimi-k3"]' ]] ||
+  fail "Ollama collector rescans when the model filter changes" "$result"
+cache_file="$PI_HOME/.cache/omarchy/agent-usage/ollama-pi-sessions.json"
+jq -c '.scanDate = "2000-01-01" | .stats.todayTotalTokens = 999' "$cache_file" >"$cache_file.tmp" && mv "$cache_file.tmp" "$cache_file"
+result=$(HOME="$PI_HOME" XDG_CONFIG_HOME="$PI_HOME/.config" XDG_CACHE_HOME="$PI_HOME/.cache" \
+  OLLAMA_API_KEY="" "$ROOT/bin/omarchy-agent-usage-ollama" --limits-only)
+[[ $(jq -r '.todayTotalTokens' <<<"$result") == "55" ]] ||
+  fail "Ollama collector rescans past a scan from another day" "$result"
+pass "Ollama collector reuses a session scan only for the same day and filter"
+
 # probe_limits reaches Ollama, so the reader that interprets its answer is
 # exercised on its own: the collector loads as a module, and a recorded
 # payload stands in for the response.
