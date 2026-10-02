@@ -798,10 +798,22 @@ def fetch_remote_quota() -> dict[str, Any]:
     return quota
 
   cached = read_fresh_json(cache, float("inf")) or {}
-  if cached.get("available"):
+  if cached.get("available") and quota_window_open(cached):
     cached.update(stale=True, failure=quota.get("reason", ""))
     return cached
   return quota
+
+
+# A kept answer describes its own allowance window and nothing after it: once
+# that window resets, its usage is gone. Without a reset date, the window is
+# the calendar month (UTC) it was fetched in.
+def quota_window_open(cached: dict[str, Any]) -> bool:
+  now = dt.datetime.now(dt.timezone.utc)
+  resets_at = parse_event_time(str(cached.get("resetsAt") or ""))
+  if resets_at is not None:
+    return resets_at > now
+  fetched = number(cached.get("fetchedAtMs")) / 1000
+  return fetched > 0 and utc_month_key(fetched) == now.strftime("%Y-%m")
 
 
 # ---------------------------------------------------------------- allowance

@@ -182,10 +182,15 @@ collector.urllib.request.urlopen = lambda request, timeout=None: io.BytesIO(json
 record = run()
 collector.urllib.request.urlopen = offline
 stale = run()
+# Once the kept answer's window has reset, its usage no longer applies.
+for cache in collector.cache_root().glob("copilot-quota-*.json"):
+  kept = json.loads(cache.read_text())
+  cache.write_text(json.dumps(dict(kept, resetsAt="2020-01-01T00:00:00.000Z")))
+lapsed = run()
 # gh signed in on a machine that never ran the Copilot CLI: nothing is asked.
 collector.urllib.request.urlopen = unasked
 clean = run("--copilot-home", os.path.join(os.environ["EMPTY_HOME"], ".copilot"))
-print(json.dumps({"record": record, "stale": stale, "clean": clean, "reset": reset.isoformat()}))
+print(json.dumps({"record": record, "stale": stale, "lapsed": lapsed, "clean": clean, "reset": reset.isoformat()}))
 PY
 )
 
@@ -196,6 +201,10 @@ pass "Copilot collector stamps the live allowance"
 [[ $(jq -c '{same: (.stale.limits == .record.limits), stale: .stale.limitsStale, stamp: (.stale.limitsFetchedAt == .record.limitsFetchedAt), tier: .stale.tierLabel}' <<<"$result") == '{"same":true,"stale":true,"stamp":true,"tier":"Business"}' ]] ||
   fail "Copilot collector keeps the last live allowance, stale, after a failed check" "$result"
 pass "Copilot collector keeps the last live allowance, stale, after a failed check"
+
+[[ $(jq -c '.lapsed | {label: .limits[0].label, stale: .limitsStale, tierLabel}' <<<"$result") == '{"label":"Monthly allowance (est.)","stale":false,"tierLabel":""}' ]] ||
+  fail "Copilot collector drops a kept allowance once its window resets" "$result"
+pass "Copilot collector drops a kept allowance once its window resets"
 
 [[ $(jq -c '.clean | {ready, tierLabel, limits}' <<<"$result") == '{"ready":false,"tierLabel":"","limits":[]}' ]] ||
   fail "Copilot collector doesn't ask GitHub where the CLI never ran" "$result"
