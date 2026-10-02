@@ -74,6 +74,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `codex` | The Codex app-server RPC | native Codex CLI session files (plus pi and opencode sessions) |
 | `grok` | The credits endpoint behind Grok's `/usage` view (the billing period's included usage) | Each session's `usage.json` (the ledger `grok usage` prints: tokens by model per finished turn), plus `summary.json` for sessions |
 | `fireworks` | Estimated prepaid balance: configured funding minus rated account costs | Fireworks billing API, grouped by day and model for the last 30 days |
+| `hermes` | None (Hermes has no subscription of its own) | `state.db` in Hermes' home and in each named profile under `~/.hermes/profiles`, read-only |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -91,7 +92,8 @@ account changed.
 
 Claude limits need a signed-in CLI; without credentials the panel says so and
 falls back to local stats only. A non-default Claude directory is honored via
-`CLAUDE_CONFIG_DIR`, Codex via `CODEX_HOME`, Grok via `GROK_HOME`. Grok's
+`CLAUDE_CONFIG_DIR`, Codex via `CODEX_HOME`, Grok via `GROK_HOME`, Hermes via
+`HERMES_HOME`. Grok's
 plan comes from the settings it caches in its home, and its limit from the
 credits endpoint its own `/usage` view reads, asked with each account's
 sign-in; a sign-in left to lapse shows the last credits until Grok runs
