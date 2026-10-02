@@ -102,11 +102,41 @@ record = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"
 windows = collector.day_windows(today, collector.RECENT_DAYS)
 first_start = datetime.fromtimestamp(windows[0][1] / 1000).astimezone()
 
-# --limits-only keeps the token sections of the record already on disk.
-record_path = collector.record_path()
-record_path.parent.mkdir(parents=True, exist_ok=True)
-record_path.write_text(json.dumps(record))
+# --limits-only keeps the token sections of this account's last scan.
 carried = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", True)
+
+# Another account's scan never stands in: signed in as someone else with the
+# dashboard down, there are no tokens to show.
+class DownForOther(StubClient):
+  def call(self, method, payload):
+    raise collector.CursorError("Cursor API unreachable")
+
+
+collector.CursorClient = DownForOther
+os.environ["CURSOR_API_KEY"] = "someone_else"
+other = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", False)
+os.environ.pop("CURSOR_API_KEY")
+collector.CursorClient = StubClient
+
+# A scan from yesterday moves onto this week's dates, and its today figures
+# are cleared, since none of it happened today.
+key = collector.account_key("cursor_test")
+cache = collector.stats_cache(key)
+scan = json.loads(cache.read_text())
+yesterday_scan = dict(scan, scanDate=yesterday.isoformat())
+yesterday_scan["stats"] = dict(scan["stats"], recentDays=[{"date": (today - timedelta(days=offset)).isoformat(), "messageCount": offset} for offset in range(7, 0, -1)])
+cache.write_text(json.dumps(yesterday_scan))
+overnight = collector.carried_stats(key, today)
+cache.write_text(json.dumps(scan))
+
+# A kept limit whose billing cycle has ended is dropped, not shown stale.
+limits_cache = collector.limits_cache(key)
+good = json.loads(limits_cache.read_text())
+limits_cache.write_text(json.dumps(dict(good, limits=[dict(good["limits"][0], resetsAt="2020-01-01T00:00:00+00:00")] + good["limits"][1:])))
+collector.CursorClient = DownForOther
+lapsed = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", False)
+limits_cache.write_text(json.dumps(good))
+collector.CursorClient = StubClient
 
 
 # A failed check keeps the last good limits and the week on disk, marked stale.
@@ -126,6 +156,9 @@ collector.CursorClient = RefusedClient
 refused = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", False)
 
 print(json.dumps({
+  "other": other,
+  "overnight": overnight,
+  "lapsed": [limit["label"] for limit in lapsed["limits"]],
   "down": down,
   "refused": refused,
   "record": record,
@@ -184,6 +217,39 @@ pass "Cursor collector keeps the last good limits, stale, after a failed check"
 [[ $(jq -c '{stale: .refused.limitsStale, status: .refused.usageStatusText, kept: (.refused.limits | length)}' <<<"$result") == '{"stale":true,"status":"Waiting for auth","kept":4}' ]] ||
   fail "Cursor collector says a refused sign-in needs attention" "$result"
 pass "Cursor collector says a refused sign-in needs attention"
+
+[[ $(jq -c '.other | {limits, tierLabel, todayTotalTokens, recentDays, modelUsage}' <<<"$result") == '{"limits":[],"tierLabel":"","todayTotalTokens":0,"recentDays":[],"modelUsage":{}}' ]] ||
+  fail "Cursor collector never carries another account's numbers" "$result"
+pass "Cursor collector never carries another account's numbers"
+
+[[ $(jq -c '.overnight | {todayTotalTokens, todayTokensByModel, counts: [.recentDays[].messageCount], last: .recentDays[6].date}' <<<"$result") == "{\"todayTotalTokens\":0,\"todayTokensByModel\":{},\"counts\":[6,5,4,3,2,1,0],\"last\":\"$(TZ=UTC date +%F)\"}" ]] ||
+  fail "Cursor collector moves a scan from yesterday onto today's week" "$result"
+pass "Cursor collector moves a scan from yesterday onto today's week"
+
+[[ $(jq -c '.lapsed' <<<"$result") == '["Auto models","Named models","On-demand $9.51 / $10.00"]' ]] ||
+  fail "Cursor collector drops a kept limit whose cycle ended" "$result"
+pass "Cursor collector drops a kept limit whose cycle ended"
+
+# Days that spring forward or fall back are 23 or 25 hours long.
+dst=$(TZ=America/New_York python3 - "$ROOT/bin/omarchy-agent-usage-cursor" <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+from datetime import date
+
+loader = importlib.machinery.SourceFileLoader("cursor_collector", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+collector = importlib.util.module_from_spec(spec)
+loader.exec_module(collector)
+
+spring = collector.day_windows(date(2026, 3, 9), 2)
+fall = collector.day_windows(date(2026, 11, 1), 1)
+hours = [(end - start) / 3_600_000 for _, start, end in spring + fall]
+print(" ".join(str(int(h)) for h in hours), spring[0][2] == spring[1][1])
+PY
+)
+[[ $dst == "23 24 25 True" ]] || fail "Cursor collector sizes daily windows across DST" "$dst"
+pass "Cursor collector sizes daily windows across DST"
 
 # Someone who only uses the Cursor editor has no CLI auth file; the editor's
 # own sign-in in state.vscdb stands in, read without touching the database.

@@ -59,14 +59,6 @@ def fraction(value: Any) -> float:
     return 0.0
 
 
-def state_home() -> Path:
-  return Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
-
-
-def record_path() -> Path:
-  return state_home() / "omarchy" / "agents" / "usage" / f"{AGENT_ID}.json"
-
-
 def default_auth_path() -> Path:
   config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
   return config_home / "cursor" / "auth.json"
@@ -226,8 +218,10 @@ def day_windows(today: date, count: int) -> list[tuple[str, int, int]]:
   windows = []
   for offset in range(count - 1, -1, -1):
     day = today - timedelta(days=offset)
+    # Each midnight converts on its own: a day that springs forward or falls
+    # back is 23 or 25 hours long, never a fixed 24.
     start = datetime.combine(day, time.min).astimezone()
-    end = start + timedelta(days=1)
+    end = datetime.combine(day + timedelta(days=1), time.min).astimezone()
     windows.append((day.isoformat(), int(start.timestamp() * 1000), int(end.timestamp() * 1000)))
   return windows
 
@@ -277,26 +271,41 @@ def summarize_usage(days: list[tuple[str, dict[str, dict[str, int]]]]) -> dict[s
   }
 
 
-def carried_stats() -> dict[str, Any]:
-  """--limits-only promises fresh limits only, so the token sections stand."""
+def stats_cache(key: str) -> Path:
+  return cache_root() / f"cursor-stats-{key}.json"
+
+
+def carried_stats(key: str, today: date) -> dict[str, Any]:
+  """The last scan of this account, for runs that fetch no fresh tokens.
+
+  Another account's scan never stands in for this one's. A scan from an
+  earlier day is moved onto this week's dates, and its today figures are
+  cleared, since nothing in it happened today.
+  """
   stats = empty_stats()
-  try:
-    previous = json.loads(record_path().read_text())
-  except (OSError, ValueError):
-    return stats
+  cached = read_json(stats_cache(key))
+  previous = cached.get("stats")
   if not isinstance(previous, dict):
     return stats
-  for key in stats:
-    if key in previous:
-      stats[key] = previous[key]
+  for name in stats:
+    if name in previous:
+      stats[name] = previous[name]
+  if cached.get("scanDate") != today.isoformat():
+    counts = {str(row.get("date")): row.get("messageCount", 0) for row in stats["recentDays"] if isinstance(row, dict)}
+    week = [window[0] for window in day_windows(today, RECENT_DAYS)]
+    stats["recentDays"] = [{"date": day, "messageCount": counts.get(day, 0)} for day in week]
+    stats["todayTotalTokens"] = 0
+    stats["todayTokensByModel"] = {}
   return stats
 
 
-def collect_stats(client: CursorClient, today: date) -> dict[str, Any]:
+def collect_stats(client: CursorClient, today: date, key: str) -> dict[str, Any]:
   windows = day_windows(today, RECENT_DAYS)
   with ThreadPoolExecutor(max_workers=4) as pool:
     rows = list(pool.map(lambda window: client.aggregations(window[1], window[2]), windows))
-  return summarize_usage([(window[0], summarize_day(day_rows)) for window, day_rows in zip(windows, rows)])
+  stats = summarize_usage([(window[0], summarize_day(day_rows)) for window, day_rows in zip(windows, rows)])
+  write_json(stats_cache(key), {"scanDate": today.isoformat(), "stats": stats})
+  return stats
 
 
 def summarize_limits(period: dict[str, Any]) -> list[dict[str, Any]]:
@@ -358,10 +367,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     raise
 
 
-# Keyed by who the token signs in as (the JWT's subject), so a machine signed
-# in to someone else never shows the last one's limits, and a refreshed token
-# keeps the same cache. An opaque API key keys by its own hash.
-def limits_cache(token: str) -> Path:
+# Who the token signs in as (the JWT's subject), so a machine signed in to
+# someone else never shows the last one's limits or tokens, and a refreshed
+# token keeps the same caches. An opaque API key keys by its own hash.
+def account_key(token: str) -> str:
   subject = ""
   parts = token.split(".")
   if len(parts) == 3:
@@ -370,8 +379,27 @@ def limits_cache(token: str) -> Path:
       subject = str(claims.get("sub") or "") if isinstance(claims, dict) else ""
     except (ValueError, UnicodeDecodeError):
       subject = ""
-  key = hashlib.sha256((subject or token).encode("utf-8")).hexdigest()[:16]
+  return hashlib.sha256((subject or token).encode("utf-8")).hexdigest()[:16]
+
+
+def limits_cache(key: str) -> Path:
   return cache_root() / f"cursor-limits-{key}.json"
+
+
+# A kept limit is only good until its billing cycle ends.
+def open_limits(limits: Any) -> list[dict[str, Any]]:
+  now = datetime.now(timezone.utc)
+  kept = []
+  for limit in limits if isinstance(limits, list) else []:
+    if not isinstance(limit, dict):
+      continue
+    try:
+      resets_at = datetime.fromisoformat(str(limit.get("resetsAt") or ""))
+    except ValueError:
+      resets_at = None
+    if resets_at is None or resets_at.tzinfo is None or resets_at > now:
+      kept.append(limit)
+  return kept
 
 
 def now_ms() -> int:
@@ -384,14 +412,16 @@ def scan(api_base_url: str, auth_path: Path, limits_only: bool, state_db: Path |
     return base_record(usageStatusText="Cursor unavailable", authHelpText=AUTH_HELP)
 
   client = CursorClient(token, api_base_url)
-  cache = limits_cache(token)
+  key = account_key(token)
+  cache = limits_cache(key)
+  today = datetime.now().astimezone().date()
   try:
     period = client.period()
   except CursorError as error:
     # A failed check keeps the last good limits, marked stale so the panel
     # dims them, and the week of tokens already on disk.
     cached = read_json(cache)
-    limits = cached.get("limits") or []
+    limits = open_limits(cached.get("limits"))
     status = "Waiting for auth" if error.auth else ("" if limits else "Cursor limits unavailable")
     record = base_record(
       ready=True,
@@ -400,9 +430,9 @@ def scan(api_base_url: str, auth_path: Path, limits_only: bool, state_db: Path |
       authHelpText=str(error),
       limits=limits,
       limitsStale=True,
-      limitsFetchedAt=number(cached.get("fetchedAtMs")),
+      limitsFetchedAt=number(cached.get("fetchedAtMs")) if limits else 0,
     )
-    record.update(carried_stats())
+    record.update(carried_stats(key, today))
     return record
 
   record = base_record(
@@ -414,12 +444,12 @@ def scan(api_base_url: str, auth_path: Path, limits_only: bool, state_db: Path |
   )
   write_json(cache, {"fetchedAtMs": record["limitsFetchedAt"], "tierLabel": record["tierLabel"], "limits": record["limits"]})
   if limits_only:
-    record.update(carried_stats())
+    record.update(carried_stats(key, today))
   else:
     try:
-      record.update(collect_stats(client, datetime.now().astimezone().date()))
+      record.update(collect_stats(client, today, key))
     except CursorError:
-      record.update(carried_stats())
+      record.update(carried_stats(key, today))
   return record
 
 
