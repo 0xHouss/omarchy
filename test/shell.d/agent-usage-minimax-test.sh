@@ -8,12 +8,12 @@ require_command python3
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT
 
-no_key=$(HOME="$TEST_HOME" XDG_DATA_HOME="$TEST_HOME/.local/share" MINIMAX_API_KEY="" \
+no_key=$(HOME="$TEST_HOME" XDG_DATA_HOME="$TEST_HOME/.local/share" XDG_CACHE_HOME="$TEST_HOME/.cache" MINIMAX_API_KEY="" \
   MMX_CONFIG_DIR="$TEST_HOME/missing" "$ROOT/bin/omarchy-agent-usage-minimax")
 
-[[ $(jq -r '.id + ":" + (.ready | tostring) + ":" + .tierLabel' <<<"$no_key") == "minimax:false:Token Plan" ]] ||
-  fail "MiniMax collector prints a valid record without credentials" "$no_key"
-pass "MiniMax collector prints a valid record without credentials"
+[[ $(jq -c '{id, ready, tierLabel, limits}' <<<"$no_key") == '{"id":"minimax","ready":false,"tierLabel":"","limits":[]}' ]] ||
+  fail "MiniMax collector prints a record the panel skips without credentials" "$no_key"
+pass "MiniMax collector prints a record the panel skips without credentials"
 
 result=$(python3 - "$ROOT/bin/omarchy-agent-usage-minimax" "$TEST_HOME" <<'PY'
 import importlib.machinery
@@ -28,6 +28,7 @@ home = Path(sys.argv[2])
 os.environ["HOME"] = str(home)
 os.environ["MMX_CONFIG_DIR"] = str(home / ".mmx")
 os.environ["XDG_DATA_HOME"] = str(home / ".local/share")
+os.environ["XDG_CACHE_HOME"] = str(home / ".cache")
 
 loader = importlib.machinery.SourceFileLoader("minimax_collector", collector_path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -84,6 +85,12 @@ class WorkingClient:
 scanner.fetch_quota = lambda api_key, base_url: payload
 record = scanner.collect("mmx_test", "https://example.invalid")
 
+def unreachable(api_key, base_url):
+  raise scanner.MiniMaxError("Could not reach the MiniMax API")
+
+scanner.fetch_quota = unreachable
+stale = scanner.collect("mmx_test", "https://example.invalid")
+
 print(json.dumps({
   "limits": limits,
   "savedKey": saved_key,
@@ -92,6 +99,7 @@ print(json.dumps({
   "oauthBaseUrl": oauth_base_url,
   "opencodeKey": opencode_key,
   "record": record,
+  "stale": stale,
 }))
 PY
 )
@@ -112,6 +120,12 @@ pass "MiniMax credentials use mmx and opencode logins"
   fail "MiniMax credentials use the OAuth session and region saved by mmx" "$result"
 pass "MiniMax credentials use the OAuth session and region saved by mmx"
 
-[[ $(jq -c '.record | {id, ready, hasLocalStats, hasPromptStats, scope, tierLabel}' <<<"$result") == '{"id":"minimax","ready":true,"hasLocalStats":false,"hasPromptStats":false,"scope":"account","tierLabel":"Token Plan"}' ]] ||
+[[ $(jq -c '.record | {id, ready, hasLocalStats, hasPromptStats, scope, tierLabel, limitsStale}' <<<"$result") == '{"id":"minimax","ready":true,"hasLocalStats":false,"hasPromptStats":false,"scope":"account","tierLabel":"Token Plan","limitsStale":false}' ]] ||
   fail "MiniMax collector prints the display-ready record contract" "$result"
 pass "MiniMax collector prints the display-ready record contract"
+
+[[ $(jq -c '.stale | {ready, tierLabel, limitsStale, percent: .limits[0].percent, usageStatusText, authHelpText}' <<<"$result") == '{"ready":true,"tierLabel":"Token Plan","limitsStale":true,"percent":0.9,"usageStatusText":"MiniMax limits unavailable","authHelpText":"Could not reach the MiniMax API"}' ]] ||
+  fail "MiniMax collector keeps the last limits, marked stale, after a failed check" "$result"
+[[ $(jq -r '.stale.limitsFetchedAt == .record.limitsFetchedAt and .record.limitsFetchedAt > 0' <<<"$result") == "true" ]] ||
+  fail "stale MiniMax limits keep when they were fetched" "$result"
+pass "MiniMax collector keeps the last limits, marked stale, after a failed check"

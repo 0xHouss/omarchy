@@ -2,7 +2,11 @@
 # omarchy:summary=Print the MiniMax Token Plan usage record as JSON
 # omarchy:args=[--force] [--limits-only]
 # omarchy:hidden=true
-"""Collect MiniMax Token Plan limits into a display-ready JSON record."""
+"""Collect MiniMax Token Plan limits into a display-ready JSON record.
+
+The last good limits are cached, so a failed check keeps showing them, marked
+stale, rather than dropping the section.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +14,8 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -19,7 +25,8 @@ from typing import Any
 AGENT_ID = "minimax"
 AGENT_NAME = "MiniMax"
 DEFAULT_BASE_URL = "https://api.minimax.io"
-AUTH_HELP = "Set MINIMAX_API_KEY, run `mmx auth login`, or sign in to MiniMax in opencode."
+AUTH_HELP = "Set MINIMAX_API_KEY, or sign in to MiniMax in opencode."
+TIER_LABEL = "Token Plan"
 
 
 class MiniMaxError(Exception):
@@ -51,10 +58,12 @@ def base_record(**overrides: Any) -> dict[str, Any]:
     "hasLocalStats": False,
     "hasPromptStats": False,
     "scope": "account",
-    "tierLabel": "Token Plan",
+    "tierLabel": "",
     "usageStatusText": "",
     "authHelpText": "",
     "limits": [],
+    "limitsStale": False,
+    "limitsFetchedAt": 0,
   }
   record.update(empty_stats())
   record.update(overrides)
@@ -66,6 +75,24 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
   except Exception:
     return None
+
+
+# A temporary file of its own per write, so overlapping runs can't rename
+# each other's away.
+def write_json(path: Path, payload: Any) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      json.dump(payload, handle)
+    os.replace(tmp, path)
+  except Exception:
+    Path(tmp).unlink(missing_ok=True)
+    raise
+
+
+def limits_cache() -> Path:
+  return Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "omarchy" / "agent-usage" / "minimax-limits.json"
 
 
 def mmx_config_dir() -> Path:
@@ -209,7 +236,7 @@ def fetch_quota(api_key: str, base_url: str) -> dict[str, Any]:
       payload = json.load(response)
   except urllib.error.HTTPError as error:
     if error.code in (401, 403):
-      raise MiniMaxError("MiniMax rejected the saved credentials; run `mmx auth login` or `mmx auth refresh`") from error
+      raise MiniMaxError("MiniMax rejected the saved credentials") from error
     raise MiniMaxError(f"MiniMax API returned HTTP {error.code}") from error
   except urllib.error.URLError as error:
     raise MiniMaxError("Could not reach the MiniMax API") from error
@@ -225,11 +252,33 @@ def fetch_quota(api_key: str, base_url: str) -> dict[str, Any]:
   return payload
 
 
+# Nobody with a MiniMax key here: an empty record, which the panel skips.
+# With one, a failed check keeps the last good limits, marked stale.
 def collect(api_key: str, base_url: str) -> dict[str, Any]:
   if not api_key:
     return base_record(usageStatusText="MiniMax unavailable", authHelpText=AUTH_HELP)
-  limits = quota_limits(fetch_quota(api_key, base_url))
-  return base_record(ready=True, limits=limits)
+
+  record = base_record(ready=True, tierLabel=TIER_LABEL)
+  try:
+    limits = quota_limits(fetch_quota(api_key, base_url))
+  except MiniMaxError as error:
+    cached = read_json(limits_cache()) or {}
+    record.update(
+      limits=cached.get("limits") or [],
+      limitsStale=True,
+      limitsFetchedAt=int(cached.get("fetchedAtMs") or 0),
+      usageStatusText="MiniMax limits unavailable",
+      authHelpText=str(error),
+    )
+    return record
+
+  fetched_at = round(time.time() * 1000)
+  record.update(limits=limits, limitsFetchedAt=fetched_at)
+  try:
+    write_json(limits_cache(), {"fetchedAtMs": fetched_at, "limits": limits})
+  except OSError:
+    pass
+  return record
 
 
 def main() -> int:
@@ -244,8 +293,6 @@ def main() -> int:
   try:
     api_key, saved_base_url = credentials()
     record = collect(api_key, args.base_url or saved_base_url)
-  except MiniMaxError as error:
-    record = base_record(usageStatusText="MiniMax limits unavailable", authHelpText=str(error))
   except Exception as error:
     record = base_record(usageStatusText="MiniMax limits unavailable", authHelpText="MiniMax usage scan failed")
     print(f"omarchy-agent-usage-minimax: {type(error).__name__}", file=sys.stderr)

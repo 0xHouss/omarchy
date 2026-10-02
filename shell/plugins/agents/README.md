@@ -139,7 +139,11 @@ Ollama Cloud serves, set a model prefix in
 `modelPrefix` restricts the local stats to models whose name starts with the
 prefix (empty means every model); `apiKey` overrides the key lookup order.
 
-MiniMax reads `MINIMAX_API_KEY` first, then the API key or OAuth session saved by `mmx auth login`, then the key opencode stores when MiniMax is signed in there. It uses the region and resource URL saved by `mmx`, or the global `https://api.minimax.io` endpoint by default; `MINIMAX_BASE_URL` overrides both. Run `mmx auth refresh` if the panel reports that a saved OAuth session expired.
+MiniMax reads `MINIMAX_API_KEY` first, then the API key or OAuth session
+saved by MiniMax's own `mmx` CLI if you use it, then the key opencode stores
+when MiniMax is signed in there. It uses the region and resource URL saved by
+`mmx`, or the global `https://api.minimax.io` endpoint by default;
+`MINIMAX_BASE_URL` overrides both.
 
 ### Fireworks balance
 
