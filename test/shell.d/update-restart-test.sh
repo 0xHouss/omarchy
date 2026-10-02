@@ -59,7 +59,7 @@ done
 
 run_restart() {
   : >"$test_tmp/prompts"
-  env HOME="$test_tmp/home" PATH="$test_tmp/bin:$PATH" \
+  env HOME="$test_tmp/home" OMARCHY_UPDATE_UNATTENDED=0 PATH="$test_tmp/bin:$PATH" \
     TEST_TMP="$test_tmp" TEST_PIDS="$1" \
     bash "$ROOT/bin/omarchy-update-restart" >"$test_tmp/output"
   [[ ! -e $test_tmp/unexpected ]] || fail "restart test attempted a system mutation"
