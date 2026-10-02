@@ -20,7 +20,7 @@ PLUGINS_DIR="$HOME/.config/omarchy/plugins"
 
 [[ -d $PLUGINS_DIR ]] || exit 0
 
-broken_pattern='(root\.)?bar\.centerHoverRevealSuppressed[[:space:]]*='
+broken_assignment='root.bar.centerHoverRevealSuppressed = value'
 patched=0
 
 while IFS= read -r -d '' manifest; do
@@ -33,28 +33,22 @@ while IFS= read -r -d '' manifest; do
 
   # Find QML files that still contain the broken assignment
   while IFS= read -r -d '' qml_file; do
-    # Confirm the file has the old pattern but NOT the new function-check form
-    if grep -qE "$broken_pattern" "$qml_file" && \
-       ! grep -q 'typeof root\.bar\.setCenterHoverRevealSuppressed' "$qml_file" && \
-       ! grep -q 'typeof bar\.setCenterHoverRevealSuppressed' "$qml_file"; then
+    grep -qF "$broken_assignment" "$qml_file" || continue
 
-      backup=$(mktemp "${qml_file}.bak.XXXXXX")
-      cp -p "$qml_file" "$backup"
+    backup=$(mktemp "${qml_file}.bak.XXXXXX")
+    cp -p "$qml_file" "$backup"
 
-      # Remove the local function block and any directly preceding comment lines
-      # using recursive balanced braces to safely handle nested blocks.
-      perl -0777 -i -pe '
-        s{(?:\n[ \t]*//[^\n]*)*\n[ \t]*function\s+setCenterHoverRevealSuppressed\s*\([^)]*\)\s*(\{ (?: [^{}]+ | (?1) )* \})}{}gx;
-      ' "$qml_file"
+    # Remove only the stock 4.0.0-4.0.2 override and its directly preceding comment
+    # lines; an override the user has edited is left exactly as it is.
+    perl -0777 -i -pe '
+      s{(?:\n[ \t]*//[^\n]*)*\n[ \t]*function setCenterHoverRevealSuppressed\(value\) \{\n[ \t]*if \(root\.bar && "centerHoverRevealSuppressed" in root\.bar\)\n[ \t]*root\.bar\.centerHoverRevealSuppressed = value\n[ \t]*\}(?=\n)}{}g;
+    ' "$qml_file"
 
-      # Sanity check: confirm the broken assignment was eliminated
-      if grep -qE "$broken_pattern" "$qml_file"; then
-        echo "  Warning: could not cleanly remove local override from $qml_file; restoring backup." >&2
-        cp -p "$backup" "$qml_file"
-      else
-        echo "  Patched: $qml_file (backup: $backup)"
-        (( patched++ )) || true
-      fi
+    if cmp -s "$backup" "$qml_file"; then
+      rm -f "$backup"
+    else
+      echo "  Patched: $qml_file (backup: $backup)"
+      (( patched++ )) || true
     fi
   done < <(find "$plugin_dir" -name "*.qml" -print0)
 
