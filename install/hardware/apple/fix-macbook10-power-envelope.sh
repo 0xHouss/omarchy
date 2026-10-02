@@ -9,7 +9,7 @@ if omarchy-hw-macbook10; then
 
   unit_path=${OMARCHY_MACBOOK10_ENVELOPE_UNIT:-/etc/systemd/system/omarchy-macbook10-power-envelope.service}
   sleep_hook=${OMARCHY_MACBOOK10_ENVELOPE_SLEEP_HOOK:-/usr/lib/systemd/system-sleep/omarchy-macbook10-power-envelope}
-  envelope_bin=${OMARCHY_MACBOOK10_ENVELOPE_BIN:-${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-hw-macbook10-power-envelope}
+  envelope_bin=${OMARCHY_MACBOOK10_ENVELOPE_BIN:-/usr/bin/omarchy-hw-macbook10-power-envelope}
 
   sudo mkdir -p "$(dirname "$unit_path")" "$(dirname "$sleep_hook")"
 
