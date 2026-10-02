@@ -7,6 +7,7 @@ require_command python3
 
 TEST_HOME=$(mktemp -d)
 trap 'rm -rf "$TEST_HOME"' EXIT
+export XDG_CACHE_HOME="$TEST_HOME/.cache"
 
 mkdir -p "$TEST_HOME/.config/cursor"
 cat >"$TEST_HOME/.config/cursor/auth.json" <<'EOF'
@@ -107,7 +108,26 @@ record_path.parent.mkdir(parents=True, exist_ok=True)
 record_path.write_text(json.dumps(record))
 carried = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", True)
 
+
+# A failed check keeps the last good limits and the week on disk, marked stale.
+class DownClient(StubClient):
+  def call(self, method, payload):
+    raise collector.CursorError("Cursor API unreachable")
+
+
+class RefusedClient(StubClient):
+  def call(self, method, payload):
+    raise collector.CursorError(collector.AUTH_HELP, auth=True)
+
+
+collector.CursorClient = DownClient
+down = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", False)
+collector.CursorClient = RefusedClient
+refused = collector.scan("https://api.example", Path(os.environ["XDG_CONFIG_HOME"]) / "cursor" / "auth.json", False)
+
 print(json.dumps({
+  "down": down,
+  "refused": refused,
   "record": record,
   "aggregationCalls": sum(1 for method, _ in calls if method == "GetAggregatedUsageEvents"),
   "windowIsLocalMidnight": (first_start.hour, first_start.minute, first_start.second) == (0, 0, 0),
@@ -152,6 +172,18 @@ pass "Cursor collector separates today from the rest of the week"
 [[ $(jq -r '.carriedRecentDays' <<<"$result") == "true" && $(jq -r '.carriedSkipsAggregation' <<<"$result") == "true" ]] ||
   fail "Cursor collector keeps the token sections on --limits-only" "$result"
 pass "Cursor collector keeps the token sections on --limits-only"
+
+[[ $(jq -c '.record | {limitsStale, fetched: (.limitsFetchedAt > 0)}' <<<"$result") == '{"limitsStale":false,"fetched":true}' ]] ||
+  fail "Cursor collector stamps fresh limits" "$result"
+pass "Cursor collector stamps fresh limits"
+
+[[ $(jq -c '{same: (.down.limits == .record.limits), stamp: (.down.limitsFetchedAt >= .record.limitsFetchedAt), stale: .down.limitsStale, tier: .down.tierLabel, status: .down.usageStatusText, week: (.down.recentDays == .record.recentDays)}' <<<"$result") == '{"same":true,"stamp":true,"stale":true,"tier":"Ultra","status":"","week":true}' ]] ||
+  fail "Cursor collector keeps the last good limits, stale, after a failed check" "$result"
+pass "Cursor collector keeps the last good limits, stale, after a failed check"
+
+[[ $(jq -c '{stale: .refused.limitsStale, status: .refused.usageStatusText, kept: (.refused.limits | length)}' <<<"$result") == '{"stale":true,"status":"Waiting for auth","kept":4}' ]] ||
+  fail "Cursor collector says a refused sign-in needs attention" "$result"
+pass "Cursor collector says a refused sign-in needs attention"
 
 # Someone who only uses the Cursor editor has no CLI auth file; the editor's
 # own sign-in in state.vscdb stands in, read without touching the database.

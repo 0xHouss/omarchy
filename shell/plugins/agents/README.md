@@ -108,8 +108,10 @@ editor's own sign-in in `~/.config/Cursor/User/globalStorage/state.vscdb`
 ### Cursor
 
 Cursor's session files on disk carry no token counts, so this is the one
-collector with nothing to fall back on: without a credential the tab says
-"Cursor unavailable" rather than showing a week of zeros. Tokens by day and by
+collector with nothing to fall back on: without a credential the record stays
+empty and the panel skips it rather than showing a week of zeros. A failed
+check keeps the last good meters, dimmed, and the week already on disk; a
+refused sign-in also says so under the name. Tokens by day and by
 model cover the last seven days, one aggregation call per day.
 
 The meters are Cursor's own percentages — included total, auto-bucket models,

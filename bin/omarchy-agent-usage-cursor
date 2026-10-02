@@ -15,10 +15,13 @@ The agents panel only ever reads the JSON this prints.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import sqlite3
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +39,9 @@ RECENT_DAYS = 7
 
 
 class CursorError(Exception):
-  pass
+  def __init__(self, message: str, auth: bool = False) -> None:
+    super().__init__(message)
+    self.auth = auth
 
 
 def number(value: Any) -> int:
@@ -161,6 +166,8 @@ def base_record(**overrides: Any) -> dict[str, Any]:
     "usageStatusText": "",
     "authHelpText": "",
     "limits": [],
+    "limitsStale": False,
+    "limitsFetchedAt": 0,
   }
   record.update(empty_stats())
   record.update(overrides)
@@ -189,7 +196,7 @@ class CursorClient:
         body = response.read().decode("utf-8")
     except urllib.error.HTTPError as error:
       if error.code in (401, 403):
-        raise CursorError(AUTH_HELP) from error
+        raise CursorError(AUTH_HELP, auth=True) from error
       raise CursorError(f"Cursor API returned {error.code}") from error
     except (urllib.error.URLError, TimeoutError) as error:
       raise CursorError("Cursor API unreachable") from error
@@ -325,23 +332,94 @@ def summarize_limits(period: dict[str, Any]) -> list[dict[str, Any]]:
   return limits
 
 
+def cache_root() -> Path:
+  return Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "omarchy" / "agent-usage"
+
+
+def read_json(path: Path) -> dict[str, Any]:
+  try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+  return data if isinstance(data, dict) else {}
+
+
+# A temporary file of its own per write, so overlapping runs can't rename
+# each other's away.
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  path.parent.mkdir(parents=True, exist_ok=True)
+  fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      json.dump(payload, handle)
+    os.replace(tmp, path)
+  except Exception:
+    Path(tmp).unlink(missing_ok=True)
+    raise
+
+
+# Keyed by who the token signs in as (the JWT's subject), so a machine signed
+# in to someone else never shows the last one's limits, and a refreshed token
+# keeps the same cache. An opaque API key keys by its own hash.
+def limits_cache(token: str) -> Path:
+  subject = ""
+  parts = token.split(".")
+  if len(parts) == 3:
+    try:
+      claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+      subject = str(claims.get("sub") or "") if isinstance(claims, dict) else ""
+    except (ValueError, UnicodeDecodeError):
+      subject = ""
+  key = hashlib.sha256((subject or token).encode("utf-8")).hexdigest()[:16]
+  return cache_root() / f"cursor-limits-{key}.json"
+
+
+def now_ms() -> int:
+  return round(datetime.now(timezone.utc).timestamp() * 1000)
+
+
 def scan(api_base_url: str, auth_path: Path, limits_only: bool, state_db: Path | None = None) -> dict[str, Any]:
   token = read_token(auth_path, state_db)
   if not token:
     return base_record(usageStatusText="Cursor unavailable", authHelpText=AUTH_HELP)
 
   client = CursorClient(token, api_base_url)
-  period = client.period()
+  cache = limits_cache(token)
+  try:
+    period = client.period()
+  except CursorError as error:
+    # A failed check keeps the last good limits, marked stale so the panel
+    # dims them, and the week of tokens already on disk.
+    cached = read_json(cache)
+    limits = cached.get("limits") or []
+    status = "Waiting for auth" if error.auth else ("" if limits else "Cursor limits unavailable")
+    record = base_record(
+      ready=True,
+      tierLabel=str(cached.get("tierLabel") or ""),
+      usageStatusText=status,
+      authHelpText=str(error),
+      limits=limits,
+      limitsStale=True,
+      limitsFetchedAt=number(cached.get("fetchedAtMs")),
+    )
+    record.update(carried_stats())
+    return record
+
   record = base_record(
     ready=True,
     tierLabel=client.plan_name(),
     authHelpText=AUTH_HELP,
     limits=summarize_limits(period),
+    limitsFetchedAt=now_ms(),
   )
+  write_json(cache, {"fetchedAtMs": record["limitsFetchedAt"], "tierLabel": record["tierLabel"], "limits": record["limits"]})
   if limits_only:
     record.update(carried_stats())
   else:
-    record.update(collect_stats(client, datetime.now().astimezone().date()))
+    try:
+      record.update(collect_stats(client, datetime.now().astimezone().date()))
+    except CursorError:
+      record.update(carried_stats())
   return record
 
 
