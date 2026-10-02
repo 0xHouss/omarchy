@@ -80,6 +80,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `ollama` | Ollama Cloud's usage endpoint (5-hour session + 7-day weekly) | pi and omp sessions on the `ollama-cloud` provider |
 | `minimax` | MiniMax Token Plan API (5-hour session + 7-day weekly) | Not available from the quota API |
 | `openrouter` | Prepaid balance from `/credits`, key-limit meter from `/key` | opencode sessions on the OpenRouter provider, or the `/activity` billing API with a management key |
+| `deepseek` | Live prepaid balance from `GET https://api.deepseek.com/user/balance`, with the optional `fundedAmount` estimate for the funded-versus-spent line | pi/omp session files whose assistant messages ran on the deepseek provider, plus opencode sessions on a deepseek provider |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -145,6 +146,13 @@ saved by MiniMax's own `mmx` CLI if you use it, then the key opencode stores
 when MiniMax is signed in there. It uses the region and resource URL saved by
 `mmx`, or the global `https://api.minimax.io` endpoint by default;
 `MINIMAX_BASE_URL` overrides both.
+
+DeepSeek reads `DEEPSEEK_API_KEY` first, then the key pi
+stores in `~/.pi/agent/auth.json`, then the key opencode stores in its own
+`auth.json` when DeepSeek is signed in there. Its `fundedAmount` estimate
+lives in `~/.config/omarchy/agents/deepseek.json`, the same shape the
+fireworks collector uses; without it the panel shows the live remaining
+credit and skips the funded-versus-spent line.
 
 ### Fireworks balance
 
