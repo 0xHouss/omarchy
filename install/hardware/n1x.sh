@@ -7,13 +7,16 @@ omarchy-hw-n1x || return 0
 
 echo "Detected NVIDIA N1x platform, applying bring-up configuration..."
 
-# The ISO installs linux-n1x through archinstall's kernels list; make sure the
-# headers for DKMS are present and the stock kernel is gone so Limine shows a
-# single kernel.
-omarchy-pkg-add linux-n1x linux-n1x-headers
-pacman -Rdd --noconfirm linux linux-headers 2>/dev/null || true
+# linux-omarchy-n1x is Omarchy's kernel with NVIDIA's N1x patches (embedded
+# controller, audio, GPU IOMMU, the MediaTek I2C behind the keyboard and
+# touchpad). The ISO installs it through archinstall's kernels list; make sure
+# the headers for DKMS are present, and that the stock kernel and NVIDIA's
+# older 7.0-based linux-n1x are gone so Limine shows a single kernel.
+n1x_kernel=linux-omarchy-n1x
+omarchy-pkg-add "$n1x_kernel" "$n1x_kernel-headers"
+pacman -Rdd --noconfirm linux linux-headers linux-n1x linux-n1x-headers 2>/dev/null || true
 if pacman -Qq linux &>/dev/null; then
-  echo "WARNING: stock linux kernel still installed alongside linux-n1x:"
+  echo "WARNING: stock linux kernel still installed alongside $n1x_kernel:"
   pacman -Qi linux | grep -i "required by"
 fi
 
@@ -44,16 +47,16 @@ fi
 rescue_cmdline="$root_cmdline omarchy.n1x_recovery=1 acpi=nospcr plymouth.enable=0 nomodeset module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau modprobe.blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau nvidia_drm.modeset=0 systemd.unit=multi-user.target console=tty0 fbcon=map:0 loglevel=7 ignore_loglevel systemd.show_status=1 systemd.log_target=console udev.log_level=debug vt.global_cursor_default=1"
 printf '%s\n' \
   '# N1x bring-up: the rescue entry sits right below the normal one.' \
-  "KERNEL_CMDLINE[linux-n1x-rescue]=\"$rescue_cmdline\"" \
-  'BOOT_ORDER="linux-n1x, linux-n1x-rescue, *fallback, *, Snapshots"' \
+  "KERNEL_CMDLINE[$n1x_kernel-rescue]=\"$rescue_cmdline\"" \
+  "BOOT_ORDER=\"$n1x_kernel, $n1x_kernel-rescue, *fallback, *, Snapshots\"" \
   > /etc/limine-entry-tool.d/zz-omarchy-n1x-boot-order.conf
 
 # Build the compact rescue UKI from the normal hardware-selected initramfs and
 # register it as a custom entry. --no-hooks: this runs inside the installer's
 # masked-hooks window; the final limine-update owns the normal UKI.
-mapfile -t n1x_pkgbase_files < <(grep -lFx linux-n1x /usr/lib/modules/*/pkgbase 2>/dev/null || true)
+mapfile -t n1x_pkgbase_files < <(grep -lFx "$n1x_kernel" /usr/lib/modules/*/pkgbase 2>/dev/null || true)
 if (( ${#n1x_pkgbase_files[@]} != 1 )); then
-  echo "Error: expected one installed linux-n1x module tree, found ${#n1x_pkgbase_files[@]}" >&2
+  echo "Error: expected one installed $n1x_kernel module tree, found ${#n1x_pkgbase_files[@]}" >&2
   return 1
 fi
 n1x_kernel_version=${n1x_pkgbase_files[0]#/usr/lib/modules/}
@@ -66,7 +69,7 @@ if ! mkinitcpio --kernel "$n1x_kernel_version" --cmdline "$n1x_rescue_cmdline_fi
   echo "Error: failed to build the N1x rescue UKI" >&2
   return 1
 fi
-if ! limine-entry-tool --add-uki linux-n1x-rescue "$n1x_rescue_uki" \
+if ! limine-entry-tool --add-uki "$n1x_kernel-rescue" "$n1x_rescue_uki" \
   --comment "N1x rescue (text console, graphics off)" --overwrite --quiet --no-mutex --no-hooks; then
   rm -f "$n1x_rescue_cmdline_file" "$n1x_rescue_uki"
   echo "Error: failed to register the N1x rescue UKI" >&2
