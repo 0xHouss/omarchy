@@ -77,6 +77,7 @@ light surfaces — and the bar glyph stands in when there is none.
 | `hermes` | None (Hermes has no subscription of its own) | `state.db` in Hermes' home and in each named profile under `~/.hermes/profiles`, read-only |
 | `agy` | Google's Cloud Code API (`loadCodeAssist` for the plan, `retrieveUserQuotaSummary` for the 5-hour and weekly windows) | `history.jsonl`, `conversation_summaries.db`, and each conversation's `transcript.jsonl` under `~/.gemini/antigravity-cli/` (`AGY_DIR`) |
 | `zai` | Z.ai's coding-plan monitor endpoint (5-hour session + 7-day weekly) | pi/omp sessions on the Z.ai provider (`glm-*` models) |
+| `ollama` | Ollama Cloud's usage endpoint (5-hour session + 7-day weekly) | pi and omp sessions on the `ollama-cloud` provider |
 
 When `~/.local/state/omarchy/agents/accounts/<claude|codex|grok>.json`
 registers more than one account, the `claude`, `codex`, and `grok` records
@@ -113,6 +114,30 @@ reports "no coding plan" and the panel falls back to local stats only. The key
 comes from `~/.config/omarchy/agents/zai.json`, then `ZAI_API_KEY` /
 `ZHIPU_API_KEY` in the environment, then pi/omp's `.env`. Set `platform` to
 `"zhipu"` in the config for the China (`open.bigmodel.cn`) host.
+
+### Ollama Cloud limits
+
+Ollama Cloud reads `OLLAMA_API_KEY` first, then the key pi or omp signed in
+with in `~/.pi/agent/auth.json` or `~/.omp/agent/auth.json`.
+
+Ollama's usage endpoint reports the account's session and weekly usage as
+0..1 fractions but not the reset times; the resets are the same for every
+account (epoch-aligned 5-hour session windows, weekly windows ending Monday
+00:00 UTC), so the collector computes them. The limits cover the whole
+account — every model the key can reach — while the local stats count pi and
+omp sessions on the `ollama-cloud` provider. To count only the Claude models
+Ollama Cloud serves, set a model prefix in
+`~/.config/omarchy/agents/ollama.json`:
+
+```json
+{
+  "modelPrefix": "claude",
+  "apiKey": ""
+}
+```
+
+`modelPrefix` restricts the local stats to models whose name starts with the
+prefix (empty means every model); `apiKey` overrides the key lookup order.
 
 ### Fireworks balance
 

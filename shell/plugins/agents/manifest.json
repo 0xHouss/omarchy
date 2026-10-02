@@ -25,7 +25,8 @@
         "fireworks": { "enabled": true },
         "hermes": { "enabled": true },
         "agy": { "enabled": true },
-        "zai": { "enabled": true }
+        "zai": { "enabled": true },
+        "ollama": { "enabled": true }
       },
       "refreshIntervalSec": 900,
       "syncMode": "Off",
