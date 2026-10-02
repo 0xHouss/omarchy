@@ -27,7 +27,8 @@ while IFS= read -r -d '' manifest; do
   plugin_dir="$(dirname "$manifest")"
 
   # Only process clones of clock or weather panels
-  cloned_from="$(jq -r '.omarchy.clonedFrom // empty' "$manifest" 2>/dev/null)"
+  # A manifest jq cannot read is not a clone to patch, and must not abort the queue.
+  cloned_from="$(jq -r '.omarchy.clonedFrom // empty' "$manifest" 2>/dev/null || true)"
   [[ $cloned_from == "omarchy.clock" || $cloned_from == "omarchy.weather" ]] || continue
 
   # Find QML files that still contain the broken assignment
