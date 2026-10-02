@@ -212,10 +212,47 @@ result=$(HOME="$V2_HOME" XDG_CACHE_HOME="$V2_HOME/.cache" XDG_DATA_HOME="$V2_HOM
   fail "OpenCode collector reads V2 records once each, without fork copies" "$result"
 pass "OpenCode collector reads V2 records once each, without fork copies"
 
+# Valid JSON with a nested field of the wrong shape (a numeric time, a list of
+# tokens or of cache counts, a list for a pi message) costs that field or that
+# row, never the record.
+ODD_HOME=$(mktemp -d)
+trap 'rm -rf "$PI_HOME" "$OPENCODE_HOME" "$CACHE_HOME" "$SESSION_HOME" "$V2_HOME" "$ODD_HOME"' EXIT
+mkdir -p "$ODD_HOME/.pi/agent/sessions/project"
+cat >"$ODD_HOME/.pi/agent/sessions/project/pi.jsonl" <<EOF
+{"type":"message","id":"pi-odd","timestamp":"$timestamp","message":["provider","opencode"]}
+{"type":"message","id":"pi-usage","timestamp":"$timestamp","message":{"role":"assistant","provider":"opencode","model":"kimi-k3","usage":[1,2]}}
+EOF
+python3 - "$ODD_HOME/.local/share/opencode/opencode.db" <<'PY'
+import json
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+db = Path(sys.argv[1])
+db.parent.mkdir(parents=True, exist_ok=True)
+conn = sqlite3.connect(db)
+conn.execute("CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, data text NOT NULL)")
+now_ms = int(time.time() * 1000)
+rows = [
+  ("odd_time", {"role": "assistant", "providerID": "opencode", "modelID": "kimi-k3", "tokens": {"input": 40, "output": 0}, "time": 12345}),
+  ("odd_tokens", {"role": "assistant", "providerID": "opencode", "modelID": "kimi-k3", "tokens": [1, 2], "time": {"created": now_ms}}),
+  ("odd_cache", {"role": "assistant", "providerID": "opencode", "modelID": "kimi-k3", "tokens": {"input": 2, "cache": [9]}, "time": {"created": now_ms}}),
+]
+conn.executemany("INSERT INTO message VALUES (?, 'ses_odd', ?)", [(id, json.dumps(data)) for id, data in rows])
+conn.commit()
+conn.close()
+PY
+result=$(HOME="$ODD_HOME" XDG_CACHE_HOME="$ODD_HOME/.cache" XDG_DATA_HOME="$ODD_HOME/.local/share" \
+  PATH="$ODD_HOME/bin:$PATH" "$ROOT/bin/omarchy-agent-usage-opencode")
+[[ $(jq -c '{totalPrompts, input: .modelUsage["kimi-k3"].inputTokens}' <<<"$result") == '{"totalPrompts":2,"input":42}' ]] ||
+  fail "OpenCode collector survives malformed nested fields" "$result"
+pass "OpenCode collector survives malformed nested fields"
+
 # A machine nobody uses OpenCode's subscription on gives a record the panel
 # skips: no plan, no limits, no usage.
 EMPTY_HOME=$(mktemp -d)
-trap 'rm -rf "$PI_HOME" "$OPENCODE_HOME" "$CACHE_HOME" "$SESSION_HOME" "$V2_HOME" "$EMPTY_HOME"' EXIT
+trap 'rm -rf "$PI_HOME" "$OPENCODE_HOME" "$CACHE_HOME" "$SESSION_HOME" "$V2_HOME" "$ODD_HOME" "$EMPTY_HOME"' EXIT
 result=$(HOME="$EMPTY_HOME" XDG_CACHE_HOME="$EMPTY_HOME/.cache" XDG_DATA_HOME="$EMPTY_HOME/.local/share" \
   OPENCODE_API_KEY= PATH="$EMPTY_HOME/bin:$PATH" "$ROOT/bin/omarchy-agent-usage-opencode")
 [[ $(jq -c '{ready, tierLabel, limits, totalPrompts, limitsStale}' <<<"$result") == '{"ready":false,"tierLabel":"","limits":[],"totalPrompts":0,"limitsStale":false}' ]] ||
