@@ -50,6 +50,17 @@ cat > /etc/limine-entry-tool.d/00-omarchy-n1x-sleep.conf <<'CONF'
 KERNEL_CMDLINE[default]+=" mem_sleep_default=s2idle"
 CONF
 
+# USB4 and Thunderbolt: linux-omarchy-n1x drives the N1x's USB4 host routers
+# (thunderbolt_platform), but only when power_wrap keeps the USB4 resources it
+# otherwise releases once USB is up, after which the SSPM stops answering for
+# the routers. The firmware leaves the tunnel root ports unconfigured, so they
+# need bus numbers set aside for a dock (0x20, as tested with a CalDigit TS4).
+cat > /etc/limine-entry-tool.d/00-omarchy-n1x-usb4.conf <<'CONF'
+# N1x: keep USB4 powered for the Thunderbolt connection manager, and leave bus
+# numbers for docks. See install/hardware/n1x.sh.
+KERNEL_CMDLINE[default]+=" power_wrap_drv.usb4_release=0 pci=hpbussize=0x20"
+CONF
+
 # Rescue entry: same kernel and initramfs, NVIDIA blacklisted, multi-user
 # target, console on the panel. Limine passes an entry's cmdline as EFI load
 # options and systemd-stub prefers those over the UKI's embedded cmdline, so
