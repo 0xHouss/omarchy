@@ -44,19 +44,23 @@ cat >"$stub_bin/systemctl" <<'STUB'
 
 printf 'systemctl\t%s\n' "$*" >>"$TEST_CALLS"
 
-case "$1" in
-  is-active)
+case "$*" in
+  "is-active --quiet dev-zram0.swap")
     [[ -e $TEST_SWAP_ACTIVE ]]
     ;;
   daemon-reload)
     exit "${DAEMON_RELOAD_STATUS:-0}"
     ;;
-  show)
+  "show -P LoadState dev-zram0.swap")
     echo "${LOAD_STATE:-loaded}"
     ;;
-  start)
+  "start dev-zram0.swap")
     (( ${START_STATUS:-0} == 0 )) || exit "$START_STATUS"
     (( ${ACTIVATE_AFTER_START:-1} == 0 )) || touch "$TEST_SWAP_ACTIVE"
+    ;;
+  *)
+    echo "unexpected systemctl call: $*" >&2
+    exit 99
     ;;
 esac
 STUB
