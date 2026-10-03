@@ -56,31 +56,36 @@ printf '%s\n' \
   "BOOT_ORDER=\"$n1x_kernel, $n1x_kernel-rescue, *fallback, *, Snapshots\"" \
   > /etc/limine-entry-tool.d/zz-omarchy-n1x-boot-order.conf
 
-# Build the compact rescue UKI from the normal hardware-selected initramfs and
-# register it as a custom entry. --no-hooks: this runs inside the installer's
-# masked-hooks window; the final limine-update owns the normal UKI.
-mapfile -t n1x_pkgbase_files < <(grep -lFx "$n1x_kernel" /usr/lib/modules/*/pkgbase 2>/dev/null || true)
-if (( ${#n1x_pkgbase_files[@]} != 1 )); then
-  echo "Error: expected one installed $n1x_kernel module tree, found ${#n1x_pkgbase_files[@]}" >&2
+# The package's own module tree: after an upgrade, kernel-modules-hook keeps the
+# running kernel's tree until the next boot, so there can be two.
+n1x_kernel_version=$(pacman -Qql "$n1x_kernel" 2>/dev/null | sed -n 's|^/usr/lib/modules/\([^/]*\)/pkgbase$|\1|p')
+if [[ -z $n1x_kernel_version || ! -d /usr/lib/modules/$n1x_kernel_version ]]; then
+  echo "Error: cannot find the installed $n1x_kernel module tree" >&2
   return 1
 fi
-n1x_kernel_version=${n1x_pkgbase_files[0]#/usr/lib/modules/}
-n1x_kernel_version=${n1x_kernel_version%/pkgbase}
-n1x_rescue_cmdline_file=$(mktemp)
-n1x_rescue_uki=$(mktemp --suffix=.efi)
-printf '%s\n' "$rescue_cmdline" > "$n1x_rescue_cmdline_file"
-if ! mkinitcpio --kernel "$n1x_kernel_version" --cmdline "$n1x_rescue_cmdline_file" --uki "$n1x_rescue_uki"; then
-  rm -f "$n1x_rescue_cmdline_file" "$n1x_rescue_uki"
+
+# The rescue entry is its own UKI, built from the normal hardware-selected
+# initramfs, which limine-update never rebuilds. Build it now, and again after
+# every kernel update, so it never boots a kernel whose modules are gone.
+# --no-hooks: this runs inside the installer's masked-hooks window; the final
+# limine-update owns the normal UKI.
+if ! omarchy-refresh-n1x-rescue --no-mutex --no-hooks; then
   echo "Error: failed to build the N1x rescue UKI" >&2
   return 1
 fi
-if ! limine-entry-tool --add-uki "$n1x_kernel-rescue" "$n1x_rescue_uki" \
-  --comment "N1x rescue (text console, graphics off)" --overwrite --quiet --no-mutex --no-hooks; then
-  rm -f "$n1x_rescue_cmdline_file" "$n1x_rescue_uki"
-  echo "Error: failed to register the N1x rescue UKI" >&2
-  return 1
-fi
-rm -f "$n1x_rescue_cmdline_file" "$n1x_rescue_uki"
+mkdir -p /etc/pacman.d/hooks
+cat > /etc/pacman.d/hooks/zz-omarchy-n1x-rescue.hook <<HOOK
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Target = $n1x_kernel
+
+[Action]
+Description = Rebuilding the N1x rescue boot entry...
+When = PostTransaction
+Exec = /usr/bin/omarchy-refresh-n1x-rescue
+HOOK
 
 # GPU policy, decided by the system firmware version.
 #
