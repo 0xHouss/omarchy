@@ -51,6 +51,9 @@ case "$1" in
   daemon-reload)
     exit "${DAEMON_RELOAD_STATUS:-0}"
     ;;
+  show)
+    echo "${LOAD_STATE:-loaded}"
+    ;;
   start)
     (( ${START_STATUS:-0} == 0 )) || exit "$START_STATUS"
     (( ${ACTIVATE_AFTER_START:-1} == 0 )) || touch "$TEST_SWAP_ACTIVE"
@@ -139,6 +142,8 @@ assert_privileged_activation
 [[ -e $default_marker ]] || fail "successful zram repair is marked complete by omarchy-migrate"
 grep -Fxq $'notification-dismiss\tOmarchy Migrations' "$calls" ||
   fail "successful migration dismisses notifications through the test stub" "$(cat "$calls")"
+[[ ! -e $state_dir/reboot-required ]] ||
+  fail "successful activation does not request a reboot" "$(cat "$calls")"
 pass "migration installs and activates missing zram support"
 
 : >"$calls"
@@ -161,7 +166,21 @@ run_migration
 grep -Fxq $'systemctl\tdaemon-reload' "$calls" || fail "inactive zram swap reloads systemd" "$(cat "$calls")"
 grep -Fxq $'systemctl\tstart dev-zram0.swap' "$calls" || fail "inactive zram swap is started" "$(cat "$calls")"
 assert_privileged_activation
+[[ ! -e $state_dir/reboot-required ]] ||
+  fail "successful activation does not request a reboot" "$(cat "$calls")"
 pass "migration activates zram when the package is already installed"
+
+for load_state in not-found masked; do
+  reset_case 1 0
+  LOAD_STATE=$load_state run_migration
+  ! grep -Fxq $'systemctl\tstart dev-zram0.swap' "$calls" ||
+    fail "a $load_state swap unit is not started" "$(cat "$calls")"
+  [[ ! -e $state_dir/reboot-required ]] ||
+    fail "a $load_state swap unit does not request a reboot" "$(cat "$calls")"
+  [[ -e $default_marker ]] ||
+    fail "a $load_state swap unit is marked complete by omarchy-migrate" "$(cat "$calls")"
+  pass "migration leaves a $load_state zram swap unit alone"
+done
 
 reset_case 1 0
 DAEMON_RELOAD_STATUS=1 run_migration
