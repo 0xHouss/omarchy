@@ -242,3 +242,16 @@ chmod 644 "$apps_dir/unreadable.desktop"
 [[ -n $guard_noise ]] &&
   fail "omarchy-webapp-present stays quiet about a launcher it cannot read" "$guard_noise"
 pass "omarchy-webapp-present stays quiet about a launcher it cannot read"
+
+# The applications directory itself can be a symlink, into a dotfiles checkout
+# say. The glob the guard replaced followed it, and so does the remover's scan.
+rm -rf "$tmp_dir/home/.local/share/applications" "$tmp_dir/dotfiles"
+mkdir -p "$tmp_dir/dotfiles/applications"
+cat >"$tmp_dir/dotfiles/applications/Linked.desktop" <<'DESKTOP'
+[Desktop Entry]
+Exec=omarchy-launch-webapp https://linked.example
+DESKTOP
+ln -s "$tmp_dir/dotfiles/applications" "$tmp_dir/home/.local/share/applications"
+HOME="$tmp_dir/home" PATH="$ROOT/bin:$PATH" bash -c "$webapp_menu_guard" ||
+  fail "the Remove menu sees web apps in an applications directory that is a symlink"
+pass "the Remove menu sees web apps in a symlinked applications directory"
