@@ -40,6 +40,16 @@ cat > /etc/limine-entry-tool.d/00-omarchy-n1x-console.conf <<'CONF'
 KERNEL_CMDLINE[default]+=" console=tty0 acpi=nospcr"
 CONF
 
+# The firmware's deep sleep returns at once: PSCI SYSTEM_SUSPEND comes straight
+# back without the machine sleeping (Dell BIOS 1.0.4 and 1.2.0), and resume
+# then stalls for a minute. Suspend to idle sleeps and wakes on the keyboard,
+# lid and power button, so make it the default.
+cat > /etc/limine-entry-tool.d/00-omarchy-n1x-sleep.conf <<'CONF'
+# N1x: the firmware's deep sleep does not sleep; suspend to idle instead. See
+# install/hardware/n1x.sh.
+KERNEL_CMDLINE[default]+=" mem_sleep_default=s2idle"
+CONF
+
 # Rescue entry: same kernel and initramfs, NVIDIA blacklisted, multi-user
 # target, console on the panel. Limine passes an entry's cmdline as EFI load
 # options and systemd-stub prefers those over the UKI's embedded cmdline, so
