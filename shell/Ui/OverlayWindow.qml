@@ -34,6 +34,22 @@ PanelWindow {
 
   onShownChanged: if (shown) targetScreen = focusedScreen() || targetScreen
 
+  // Unplugging the monitor a parked surface sits on makes the compositor close
+  // it, and nothing would map it again, so the overlay could never open after.
+  // Hiding before showing makes Quickshell build a new layer surface; showing
+  // alone would bring the old window back as a plain toplevel.
+  function remap() {
+    if (visible || Quickshell.screens.length === 0) return
+    targetScreen = focusedScreen() || targetScreen
+    visible = false
+    visible = true
+  }
+
+  Connections {
+    target: Quickshell
+    function onScreensChanged() { Qt.callLater(window.remap) }
+  }
+
   visible: true
   screen: targetScreen
   anchors { top: true; left: true; bottom: shown; right: shown }
