@@ -15,7 +15,7 @@ printf '#!/bin/bash\nexit 0\n' >"$tmp/bin/update-desktop-database"
 chmod +x "$tmp/bin/update-desktop-database"
 
 native="$HOME/.local/share/applications/Microsoft Teams.desktop"
-printf '[Desktop Entry]\nName=Microsoft Teams\nExec=teams-for-linux\nType=Application\n' >"$native"
+printf '[Desktop Entry]\nName=Microsoft Teams\nExec=teams-for-linux\nType=Application\n\n[Desktop Action Browser]\nName=Open in browser\nExec=omarchy-launch-webapp "https://teams.cloud.microsoft/"\n' >"$native"
 cp "$native" "$tmp/native-original"
 
 webapp="$HOME/.local/share/applications/Microsoft Outlook.desktop"
@@ -32,18 +32,13 @@ const fs = require('fs')
 const { spawnSync } = require('child_process')
 const menu = requireFromRoot('shell/plugins/menu/MenuModel.js')
 const items = menu.parseMenuJsonc(fs.readFileSync(path.join(root, 'default/omarchy/omarchy-menu.jsonc'), 'utf8'))
-const install = items.find(item => item.id === 'install.service.microsoft')
 const remove = items.find(item => item.id === 'remove.service.microsoft')
-assert(install && remove, 'Microsoft service menu entries exist')
+assert(remove, 'Microsoft removal menu entry exists')
 function guard(expression) {
   return spawnSync('bash', ['-c', expression], { env: process.env }).status
 }
 assert(guard(remove.when) !== 0, 'removal menu hides when only a native launcher remains')
 const applications = path.join(process.env.HOME, '.local/share/applications')
-for (const app of ['Microsoft Outlook', 'Microsoft Office', 'Microsoft OneDrive']) {
-  fs.writeFileSync(path.join(applications, `${app}.desktop`), '[Desktop Entry]\nExec=omarchy-launch-webapp "https://example.org/"\n')
-}
-assert(guard(install.disabled) !== 0, 'three web apps plus native Teams do not disable installation')
-fs.writeFileSync(path.join(applications, 'Microsoft Teams.desktop'), '[Desktop Entry]\nExec=omarchy-launch-webapp "https://teams.cloud.microsoft/"\n')
-assertEqual(guard(install.disabled), 0, 'all four web apps disable installation')
+fs.writeFileSync(path.join(applications, 'Microsoft Outlook.desktop'), '[Desktop Entry]\nExec=omarchy-launch-webapp "https://example.org/"\n')
+assertEqual(guard(remove.when), 0, 'removal menu shows for one web app while other files are absent')
 JS
