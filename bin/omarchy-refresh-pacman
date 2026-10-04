@@ -1,71 +1,100 @@
-#!/bin/bash
+#!/bin/bash -p
 
-# omarchy:summary=Reset the pacman config to the Omarchy channel defaults (keeping platform repositories on ARM), then update all packages.
+# omarchy:summary=Reset the package channel while preserving ARM platform repositories, then update all packages.
 # omarchy:args=[stable|rc|edge]
 # omarchy:requires-sudo=true
 
+if [[ $- != *p* ]]; then
+  echo "Refusing an unsafe Bash startup." >&2
+  exit 126
+fi
+
+security_entrypoint=$(/usr/bin/readlink -e -- "${BASH_SOURCE[0]}") || exit 126
+source "${security_entrypoint%/*}/omarchy-security-functions" || exit 126
+omarchy_security_require_privileged_bash_startup || exit 126
 set -eo pipefail
+omarchy_security_sanitize_bash_environment "$0" "$@"
+omarchy_security_require_source_root "$0"
+# Channel switching calls this behind its own sanitized PATH and hands the
+# caller's original path over the same way the updater receives it.
+user_path=${OMARCHY_UPDATE_USER_PATH:-$PATH}
+unset OMARCHY_UPDATE_USER_PATH
+# Traps first, so a signal or failure during the entry revocation still
+# exits through the cleanup path.
+omarchy_security_install_sudo_cleanup_traps
+omarchy_security_revoke_sudo_timestamp || exit 1
+omarchy_security_enable_no_update_sudo
 
-channel="${1:-stable}"
-pacman_config=${OMARCHY_PACMAN_CONFIG:-/etc/pacman.conf}
-mirrorlist=${OMARCHY_MIRRORLIST:-/etc/pacman.d/mirrorlist}
+# Keep temporary-file cleanup separate from the authorization cleanup above.
+(
+  channel="${1:-stable}"
+  pacman_config=/etc/pacman.conf
+  mirrorlist=/etc/pacman.d/mirrorlist
 
-if [[ $channel != "stable" && $channel != "rc" && $channel != "edge" ]]; then
-  echo "Error: Invalid channel '$channel'. Must be one of: stable, rc, edge" >&2
-  exit 1
-fi
-
-architecture=$(uname -m)
-# Do not replace a working ARM repository setup with an unpublished channel.
-if [[ $architecture == "aarch64" && ( $channel == "stable" || $channel == "rc" ) ]]; then
-  echo "Omarchy $channel packages are not published for aarch64 yet. No repository configuration changed." >&2
-  echo "Use 'omarchy refresh pacman edge' only if you intend to use edge packages and upgrade the system." >&2
-  exit 1
-fi
-
-staged=$(mktemp -d)
-trap 'rm -rf -- "$staged"' EXIT
-
-if [[ $architecture == "aarch64" ]]; then
-  # ARM installations can use ALARM or platform-specific repositories, with
-  # inline servers or their own mirrorlist, so no single template fits them.
-  # Keep that configuration and its signature policy; only switch the known
-  # Omarchy channel endpoint, and refuse anything unrecognised.
-  if ! sudo cat "$pacman_config" | awk -v channel="$channel" '
-    /^[[:space:]]*\[/ { omarchy = ($0 ~ /^[[:space:]]*\[omarchy\][[:space:]]*$/) }
-    omarchy && /^[[:space:]]*(Server|Include)[[:space:]]*=/ {
-      if ($0 ~ /^[[:space:]]*Server[[:space:]]*=[[:space:]]*https:\/\/pkgs\.omarchy\.org\/(stable|rc|edge)\/(\$arch|aarch64)[[:space:]]*$/) {
-        sub(/\/(stable|rc|edge)\//, "/" channel "/")
-        found++
-      } else {
-        unknown = 1
-      }
-    }
-    { print }
-    END { if (found != 1 || unknown) exit 1 }
-  ' >"$staged/pacman.conf"; then
-    echo "Error: Cannot identify the ARM Omarchy channel in $pacman_config; configuration unchanged." >&2
+  if [[ $channel != "stable" && $channel != "rc" && $channel != "edge" ]]; then
+    echo "Error: Invalid channel '$channel'. Must be one of: stable, rc, edge" >&2
     exit 1
   fi
-else
-  cp -f "$OMARCHY_PATH/default/pacman/pacman-$channel.conf" "$staged/pacman.conf"
-  cp -f "$OMARCHY_PATH/default/pacman/mirrorlist-$channel" "$staged/mirrorlist"
-fi
 
-echo "Setting channel to $channel"
-echo
+  architecture=$(uname -m)
+  # Do not replace a working ARM repository setup with an unpublished channel.
+  if [[ $architecture == "aarch64" && ( $channel == "stable" || $channel == "rc" ) ]]; then
+    echo "Omarchy $channel packages are not published for aarch64 yet. No repository configuration changed." >&2
+    echo "Use 'omarchy refresh pacman edge' only if you intend to use edge packages and upgrade the system." >&2
+    exit 1
+  fi
 
-sudo cp -f "$pacman_config" "$pacman_config.bak"
-if [[ $architecture != "aarch64" ]]; then
-  sudo cp -f "$mirrorlist" "$mirrorlist.bak"
-fi
-sudo cp -f "$staged/pacman.conf" "$pacman_config"
-if [[ $architecture != "aarch64" ]]; then
-  sudo cp -f "$staged/mirrorlist" "$mirrorlist"
-fi
+  staged=$(mktemp -d)
+  trap 'rm -rf -- "$staged"' EXIT
 
-# Allow user customization of /etc/pacman.conf before the upgrade runs
-omarchy-hook pre-refresh-pacman
+  if [[ $architecture == "aarch64" ]]; then
+    # ARM installations can use ALARM or platform-specific repositories, with
+    # inline servers or their own mirrorlist, so no single template fits them.
+    # Keep that configuration and its signature policy; only switch the known
+    # Omarchy channel endpoint, and refuse anything unrecognised.
+    if ! sudo cat "$pacman_config" | awk -v channel="$channel" '
+      /^[[:space:]]*\[/ { omarchy = ($0 ~ /^[[:space:]]*\[omarchy\][[:space:]]*$/) }
+      omarchy && /^[[:space:]]*(Server|Include)[[:space:]]*=/ {
+        if ($0 ~ /^[[:space:]]*Server[[:space:]]*=[[:space:]]*https:\/\/pkgs\.omarchy\.org\/(stable|rc|edge)\/(\$arch|aarch64)[[:space:]]*$/) {
+          sub(/\/(stable|rc|edge)\//, "/" channel "/")
+          found++
+        } else {
+          unknown = 1
+        }
+      }
+      { print }
+      END { if (found != 1 || unknown) exit 1 }
+    ' >"$staged/pacman.conf"; then
+      echo "Error: Cannot identify the ARM Omarchy channel in $pacman_config; configuration unchanged." >&2
+      exit 1
+    fi
+  else
+    cp -f "$OMARCHY_PATH/default/pacman/pacman-$channel.conf" "$staged/pacman.conf"
+    cp -f "$OMARCHY_PATH/default/pacman/mirrorlist-$channel" "$staged/mirrorlist"
+  fi
+
+  echo "Setting channel to $channel"
+  echo
+
+  sudo cp -f "$pacman_config" "$pacman_config.bak"
+  if [[ $architecture != "aarch64" ]]; then
+    sudo cp -f "$mirrorlist" "$mirrorlist.bak"
+  fi
+  sudo cp -f "$staged/pacman.conf" "$pacman_config"
+  if [[ $architecture != "aarch64" ]]; then
+    sudo cp -f "$staged/mirrorlist" "$mirrorlist"
+  fi
+)
+
+# Allow user customization of /etc/pacman.conf before the upgrade runs, so
+# custom repositories and IgnorePkg entries shape the downgrade-capable
+# transaction below. The hook is user code: it runs cold behind the no-update
+# wrapper, and the timestamp is revoked again afterwards so any authorization
+# the hook obtained for itself cannot carry into the transaction.
+omarchy_security_revoke_sudo_timestamp
+PATH="$OMARCHY_PATH/default/omarchy/sudo-no-update:$user_path" \
+  "$OMARCHY_PATH/bin/omarchy-hook" pre-refresh-pacman
+omarchy_security_revoke_sudo_timestamp
 
 # Reset all package DBs and then update
-sudo env OMARCHY_UPDATE_PACMAN=1 pacman -Syyuu --noconfirm
+omarchy-update-pacman -Syyuu --noconfirm

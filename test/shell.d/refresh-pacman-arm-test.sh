@@ -7,6 +7,7 @@ require_command python3
 
 python3 - "$ROOT" <<'PY'
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -15,8 +16,17 @@ import tempfile
 root = Path(sys.argv[1])
 with tempfile.TemporaryDirectory() as d:
     tmp = Path(d)
-    stub = tmp / 'bin'
-    stub.mkdir()
+    source_root = root
+    root = tmp / 'source'
+    stub = root / 'bin'
+    stub.mkdir(parents=True)
+    for name in ('bin/omarchy-refresh-pacman', 'bin/omarchy-security-functions',
+                 'default/omarchy/sudo-no-update/sudo', 'install/helpers/pacman.sh'):
+        target = root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_root / name, target)
+        target.write_text(target.read_text().replace('/usr/bin/sudo', str(tmp / 'sudo')))
+    shutil.copytree(source_root / 'default/pacman', root / 'default/pacman')
     etc = tmp / 'etc'
     (etc / 'pacman.d').mkdir(parents=True)
     log = tmp / 'calls'
@@ -27,6 +37,11 @@ with tempfile.TemporaryDirectory() as d:
 import os,sys,subprocess
 from pathlib import Path
 args=sys.argv[1:]
+if args == ['-k']: sys.exit(0)
+if args == ['-h']:
+    print('usage: sudo [-N] command')
+    sys.exit(0)
+assert args.pop(0) == '-N', args
 with open(os.environ['TEST_LOG'],'a') as f: f.write('sudo '+ ' '.join(args)+'\\n')
 if args[0]=='env':
     assert args == ['env','OMARCHY_UPDATE_PACMAN=1','pacman','-Syyuu','--noconfirm']
@@ -44,8 +59,14 @@ sys.exit(1 if args[0] == 'cat' and os.environ.get('TEST_READ_FAIL') else result)
 ''',
     }
     for name, data in scripts.items():
-        (stub / name).write_text(data)
-        (stub / name).chmod(0o755)
+        target = tmp / 'sudo' if name == 'sudo' else stub / name
+        target.write_text(data)
+        target.chmod(0o755)
+    (stub / 'omarchy-update-pacman').write_text('''#!/bin/bash
+printf 'transaction %s\\n' "$*" >>"$TEST_LOG"
+exit "${TEST_PACMAN_FAIL:-0}"
+''')
+    (stub / 'omarchy-update-pacman').chmod(0o755)
     env = dict(os.environ, PATH=f'{stub}:'+os.environ['PATH'], OMARCHY_PATH=str(root),
                TEST_ROOT=d, TEST_LOG=str(log), TEST_ARCH='aarch64')
     for name in ('OMARCHY_PACMAN_CONFIG', 'OMARCHY_MIRRORLIST'):
@@ -74,7 +95,7 @@ Server = https://pkgs.omarchy.org/stable/$arch
             backup.unlink(missing_ok=True)
         log.write_text('')
         args = [channel] if channel is not None else []
-        result = subprocess.run(['bash',str(root/'bin/omarchy-refresh-pacman'),*args],
+        result = subprocess.run(['/usr/bin/bash','-p',str(root/'bin/omarchy-refresh-pacman'),*args],
                                 env=dict(env,TEST_ARCH=arch,**extra),capture_output=True,text=True)
         return result, (etc/'pacman.conf').read_text(), log.read_text()
 
@@ -87,7 +108,7 @@ Server = https://pkgs.omarchy.org/stable/$arch
         assert (etc/'pacman.d/mirrorlist').read_text() == 'ARM mirror\n'
         assert not (etc/'pacman.d/mirrorlist.bak').exists()
         assert (etc/'pacman.conf.bak').read_text() == before
-        assert calls.index('hook pre-refresh-pacman') < calls.index('sudo env')
+        assert calls.index('hook pre-refresh-pacman') < calls.index('transaction ')
     print('ok - ARM edge preserves repository order, signature policy, mirrors and other endpoints')
 
     before = original.replace('$arch', 'aarch64')
@@ -115,7 +136,7 @@ pacman_write_repository_config edge "$TEST_ROOT/installed.conf" "$TEST_ROOT/inst
                 '[offline]\nServer = file:///offline\n'):
         result, config, calls = run(config=bad)
         assert result.returncode != 0 and config == bad
-        assert 'sudo cp' not in calls and 'sudo env' not in calls
+        assert 'sudo cp' not in calls and 'transaction ' not in calls
         assert 'hook ' not in calls
         assert (etc/'pacman.d/mirrorlist').read_text() == 'ARM mirror\n'
         assert 'configuration unchanged' in result.stderr
@@ -143,36 +164,37 @@ pacman_write_repository_config edge "$TEST_ROOT/installed.conf" "$TEST_ROOT/inst
 
     result, config, calls = run(TEST_READ_FAIL='1')
     assert result.returncode != 0 and config == original
-    assert 'sudo cp' not in calls and 'hook ' not in calls and 'sudo env' not in calls
+    assert 'sudo cp' not in calls and 'hook ' not in calls and 'transaction ' not in calls
     print('ok - a failed config read cannot overwrite the installed repositories')
 
-    defaults = tmp/'templates/default/pacman'
-    defaults.mkdir(parents=True)
-    for config_present in (False, True):
-        if config_present:
-            (defaults/'pacman-edge.conf').write_bytes((root/'default/pacman/pacman-edge.conf').read_bytes())
-        result, config, calls = run(arch='x86_64', OMARCHY_PATH=str(tmp/'templates'))
-        assert result.returncode != 0 and config == original and not calls
-        assert (etc/'pacman.d/mirrorlist').read_text() == 'ARM mirror\n'
-    print('ok - missing x86 templates stop before privileged writes')
+    template = root / 'default/pacman/mirrorlist-edge'
+    saved_template = template.read_bytes()
+    template.unlink()
+    result, config, calls = run(arch='x86_64')
+    assert result.returncode != 0 and config == original and not calls
+    assert (etc/'pacman.d/mirrorlist').read_text() == 'ARM mirror\n'
+    template.write_bytes(saved_template)
+    print('ok - missing x86 template stops before privileged writes')
 
     for failure in ('backup', 'write'):
         result, config, calls = run(TEST_COPY_FAIL=failure)
         assert result.returncode != 0 and config == original
-        assert 'hook ' not in calls and 'sudo env' not in calls
+        assert 'hook ' not in calls and 'transaction ' not in calls
     result, _, calls = run(TEST_HOOK_FAIL='9')
-    assert result.returncode == 9 and 'sudo env' not in calls
+    assert result.returncode == 9 and 'transaction ' not in calls
     result, _, _ = run(TEST_PACMAN_FAIL='7')
     assert result.returncode == 7
     print('ok - copy and hook failures stop the upgrade; pacman failure propagates')
 
+    outside = tmp / 'outside'
+    outside.write_text('untouched\n')
     for arch in ('aarch64', 'x86_64'):
-        result, config, calls = run(arch=arch, OMARCHY_PACMAN_CONFIG=str(etc/'pacman.conf'),
-                                   OMARCHY_MIRRORLIST=str(etc/'pacman.d/mirrorlist'))
+        result, config, calls = run(arch=arch, OMARCHY_PACMAN_CONFIG=str(outside),
+                                   OMARCHY_MIRRORLIST=str(outside))
         assert result.returncode == 0, result.stderr
+        assert outside.read_text() == 'untouched\n'
         expected = (original.replace('org/stable/', 'org/edge/', 1) if arch == 'aarch64'
                     else (root/'default/pacman/pacman-edge.conf').read_text())
         assert config == expected
-        assert (etc/'pacman.conf.bak').read_text() == original
-    print('ok - explicit configuration paths remain supported')
+    print('ok - caller-supplied configuration paths cannot redirect privileged writes')
 PY
