@@ -32,10 +32,18 @@ const fs = require('fs')
 const { spawnSync } = require('child_process')
 const menu = requireFromRoot('shell/plugins/menu/MenuModel.js')
 const items = menu.parseMenuJsonc(fs.readFileSync(path.join(root, 'default/omarchy/omarchy-menu.jsonc'), 'utf8'))
-for (const [id, field] of [['install.service.microsoft', 'disabled'], ['remove.service.microsoft', 'when']]) {
-  const entry = items.find(item => item.id === id)
-  assert(entry, `${id} exists`)
-  const result = spawnSync('bash', ['-c', entry[field]], { env: process.env })
-  assert(result.status !== 0, `${id} ignores a same-name native launcher`)
+const install = items.find(item => item.id === 'install.service.microsoft')
+const remove = items.find(item => item.id === 'remove.service.microsoft')
+assert(install && remove, 'Microsoft service menu entries exist')
+function guard(expression) {
+  return spawnSync('bash', ['-c', expression], { env: process.env }).status
 }
+assert(guard(remove.when) !== 0, 'removal menu hides when only a native launcher remains')
+const applications = path.join(process.env.HOME, '.local/share/applications')
+for (const app of ['Microsoft Outlook', 'Microsoft Office', 'Microsoft OneDrive']) {
+  fs.writeFileSync(path.join(applications, `${app}.desktop`), '[Desktop Entry]\nExec=omarchy-launch-webapp "https://example.org/"\n')
+}
+assert(guard(install.disabled) !== 0, 'three web apps plus native Teams do not disable installation')
+fs.writeFileSync(path.join(applications, 'Microsoft Teams.desktop'), '[Desktop Entry]\nExec=omarchy-launch-webapp "https://teams.cloud.microsoft/"\n')
+assertEqual(guard(install.disabled), 0, 'all four web apps disable installation')
 JS
