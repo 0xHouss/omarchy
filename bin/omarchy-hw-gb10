@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# omarchy:summary=Detect the NVIDIA GB10 desktop platform (GPU 10de:2e12)
+
+[[ $(uname -m) == "aarch64" ]] || exit 1
+
+pci_devices_path="${OMARCHY_PCI_DEVICES_PATH:-/sys/bus/pci/devices}"
+
+shopt -s nullglob
+for device in "$pci_devices_path"/*; do
+  [[ -r $device/vendor && -r $device/device ]] || continue
+  [[ $(< "$device/vendor") == "0x10de" ]] || continue
+  [[ $(< "$device/device") == "0x2e12" ]] && exit 0
+done
+
+exit 1
