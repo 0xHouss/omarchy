@@ -5,9 +5,15 @@ if omarchy-hw-n1x; then
   echo "NVIDIA N1x platform detected; GPU driver policy is owned by hardware/n1x.sh"
 elif lspci | grep -qi 'nvidia'; then
   if omarchy-hw-nvidia-gsp; then
-    PACKAGES=(nvidia-open-dkms nvidia-utils lib32-nvidia-utils libva-nvidia-driver)
+    PACKAGES=(nvidia-open-dkms nvidia-utils libva-nvidia-driver)
+    if [[ $(uname -m) == "x86_64" ]]; then
+      PACKAGES+=(lib32-nvidia-utils)
+    fi
   elif omarchy-hw-nvidia-without-gsp; then
-    PACKAGES=(nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils)
+    PACKAGES=(nvidia-580xx-dkms nvidia-580xx-utils)
+    if [[ $(uname -m) == "x86_64" ]]; then
+      PACKAGES+=(lib32-nvidia-580xx-utils)
+    fi
   fi
 
   # Bail if no supported GPU
