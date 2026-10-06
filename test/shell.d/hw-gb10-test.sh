@@ -29,6 +29,10 @@ SH
 
 cat > "$tmp_dir/bin/sudo" <<'SH'
 #!/bin/bash
+if [[ $1 == install ]]; then
+  [[ $2 == -Dm644 && $4 == /etc/systemd/sleep.conf.d/10-omarchy-gb10.conf ]] || exit 1
+  exec /usr/bin/install -Dm644 "$3" "$TEST_STATE/sleep.conf"
+fi
 [[ $1 == systemctl ]] || exit 1
 shift
 exec systemctl "$@"
@@ -91,6 +95,13 @@ printf '%s\n' fwupd rdma-core ethtool nvme-cli smartmontools > "$tmp_dir/expecte
 cmp -s "$tmp_dir/expected" "$tmp_dir/installed" || fail "fresh GB10 setup installs the support packages"
 [[ ! -s $tmp_dir/systemctl ]] || fail "fresh setup must not start host services from the chroot"
 pass "fresh setup installs support without starting services in the installer chroot"
+cmp -s "$ROOT/install/hardware/gb10/10-omarchy-gb10.conf" "$tmp_dir/sleep.conf" || fail "fresh GB10 setup disables unsupported suspend"
+pass "fresh GB10 setup disables unsupported suspend"
+
+bash -euo pipefail "$ROOT/migrations/1791313045.sh"
+bash -euo pipefail "$ROOT/migrations/1791313045.sh"
+cmp -s "$ROOT/install/hardware/gb10/10-omarchy-gb10.conf" "$tmp_dir/sleep.conf" || fail "suspend migration is idempotent"
+pass "suspend migration is idempotent"
 
 bash -euo pipefail "$ROOT/migrations/1791261928.sh"
 bash -euo pipefail "$ROOT/migrations/1791261928.sh"
@@ -100,9 +111,12 @@ cmp -s "$tmp_dir/expected-units" "$tmp_dir/systemctl" || fail "upgrade must acti
 pass "repeated migration is idempotent and uses the packaged RDMA loader"
 
 truncate -s 0 "$tmp_dir/installed" "$tmp_dir/systemctl"
+rm "$tmp_dir/sleep.conf"
 write_gpu 0x10de 0x2e06
 bash -euo pipefail -c 'source "$OMARCHY_PATH/install/hardware/gb10.sh"'
 bash -euo pipefail "$ROOT/migrations/1791261928.sh"
+bash -euo pipefail "$ROOT/migrations/1791313045.sh"
+[[ ! -e $tmp_dir/sleep.conf ]] || fail "N1x must retain its suspend policy"
 [[ ! -s $tmp_dir/installed && ! -s $tmp_dir/systemctl ]] || fail "N1x must not receive GB10 packages or service changes"
 pass "N1x installation and migration leave the laptop alone"
 
