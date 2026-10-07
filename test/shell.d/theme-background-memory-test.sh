@@ -157,6 +157,15 @@ choose_staged_theme_background
 [[ $CHOSEN_THEME_BACKGROUND == "$shared_background" ]] || fail "theme switch restores a remembered shared background"
 pass "theme switch restores a remembered shared background"
 
+# A theme with no backgrounds of its own opens on the first shared one.
+rm -rf "$NEXT_THEME_PATH/backgrounds"
+rm -f "$background_state/$THEME_NAME"
+printf 'second shared\n' >"$test_home/.config/omarchy/backgrounds/1-shared.png"
+[[ ! -e $test_home/.config/omarchy/backgrounds/$THEME_NAME ]] || fail "test theme has no user backgrounds folder"
+choose_staged_theme_background
+[[ $CHOSEN_THEME_BACKGROUND == "$shared_background" ]] || fail "a theme without backgrounds falls back to the first shared one"
+pass "a theme without backgrounds falls back to the first shared one"
+
 stub_bin="$test_tmp/bin"
 mkdir -p "$stub_bin"
 printf '#!/bin/bash\n' >"$stub_bin/omarchy-shell"
