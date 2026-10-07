@@ -128,3 +128,43 @@ ln -nsf "$CURRENT_THEME_PATH/backgrounds/first.png" "$CURRENT_BACKGROUND_LINK"
 choose_staged_theme_background
 [[ $CHOSEN_THEME_BACKGROUND == "$CURRENT_THEME_PATH/backgrounds/selected.mp4" ]] || fail "staged same-theme selection still cycles backgrounds"
 pass "staged same-theme selection still cycles backgrounds"
+
+# Shared backgrounds sit directly in the user backgrounds folder and join every
+# theme's list after its own.
+shared_background="$test_home/.config/omarchy/backgrounds/0-shared.png"
+printf 'shared\n' >"$shared_background"
+
+PREVIOUS_THEME_NAME="$theme_b"
+rm -f "$background_state/$THEME_NAME"
+choose_staged_theme_background
+[[ $CHOSEN_THEME_BACKGROUND == "$CURRENT_THEME_PATH/backgrounds/first.png" ]] || fail "shared backgrounds do not become a theme's default"
+pass "shared backgrounds do not become a theme's default"
+
+PREVIOUS_THEME_NAME="$THEME_NAME"
+ln -nsf "$CURRENT_THEME_PATH/backgrounds/selected.mp4" "$CURRENT_BACKGROUND_LINK"
+choose_staged_theme_background
+[[ $CHOSEN_THEME_BACKGROUND == "$shared_background" ]] || fail "cycling reaches shared backgrounds after the theme's own"
+pass "cycling reaches shared backgrounds after the theme's own"
+
+ln -nsf "$shared_background" "$CURRENT_BACKGROUND_LINK"
+choose_staged_theme_background
+[[ $CHOSEN_THEME_BACKGROUND == "$CURRENT_THEME_PATH/backgrounds/first.png" ]] || fail "cycling wraps from shared backgrounds to the theme's own"
+pass "cycling wraps from shared backgrounds to the theme's own"
+
+PREVIOUS_THEME_NAME="$theme_b"
+printf '%s\n' "$shared_background" >"$background_state/$THEME_NAME"
+choose_staged_theme_background
+[[ $CHOSEN_THEME_BACKGROUND == "$shared_background" ]] || fail "theme switch restores a remembered shared background"
+pass "theme switch restores a remembered shared background"
+
+stub_bin="$test_tmp/bin"
+mkdir -p "$stub_bin"
+printf '#!/bin/bash\n' >"$stub_bin/omarchy-shell"
+chmod +x "$stub_bin/omarchy-shell"
+
+set_theme "$theme_a"
+mapfile -t theme_a_backgrounds < <(find "$current_state/theme/backgrounds" -maxdepth 1 -type f -print | sort)
+ln -nsf "${theme_a_backgrounds[-1]}" "$current_state/background"
+HOME="$test_home" PATH="$stub_bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-theme-bg-next"
+[[ $(readlink "$current_state/background") == "$shared_background" ]] || fail "next background reaches shared backgrounds after the theme's own"
+pass "next background reaches shared backgrounds after the theme's own"
