@@ -177,3 +177,10 @@ ln -nsf "${theme_a_backgrounds[-1]}" "$current_state/background"
 HOME="$test_home" PATH="$stub_bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-theme-bg-next"
 [[ $(readlink "$current_state/background") == "$shared_background" ]] || fail "next background reaches shared backgrounds after the theme's own"
 pass "next background reaches shared backgrounds after the theme's own"
+
+# Without a theme name the user folder would be the shared folder itself, and
+# listing it as the theme's own would put shared backgrounds first.
+rm -f "$current_state/theme.name" "$current_state/background"
+HOME="$test_home" PATH="$stub_bin:$ROOT/bin:$PATH" "$ROOT/bin/omarchy-theme-bg-next"
+[[ $(readlink "$current_state/background") == "${theme_a_backgrounds[0]}" ]] || fail "next background keeps shared backgrounds last without a theme name"
+pass "next background keeps shared backgrounds last without a theme name"
